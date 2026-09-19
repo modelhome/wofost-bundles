@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Model Home runner output
+# The Modelfile redirects stdout to run/<output>.output.json; that's per-invocation,
+# not source.
+run/
+*.output.json
+
+# Claude Code local state
+# .claude/ itself is committed on purpose: the vendored feat skill lives in
+# .claude/skills/feat/. Ignore only machine- or user-specific settings.
+.claude/settings.local.json
+.claude/*.local.json
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Climatology build download cache (corn-yield/build_climatology.py). The
+# committed artifact is climatology.csv, not the raw archive responses.
+.climatology-cache/
+
+# Credentials. No bundle here needs a key today -- Open-Meteo's archive is
+# keyless and PCSE's crop parameters ship inside the pip package -- but these
+# belong in the home directory either way. Never commit a copy.
+.cdsapirc
+.netrc
+*.pem
+.env
+.env.*
