@@ -1,0 +1,82 @@
+{
+  "period": "1995-2024",
+  "period_start": "1995-01-01",
+  "period_end": "2024-12-31",
+  "source": "Open-Meteo archive (archive-api.open-meteo.com/v1/archive, models=era5), ERA5 reanalysis. Weather data by Open-Meteo.com, CC BY 4.0.",
+  "endpoint": "https://archive-api.open-meteo.com/v1/archive",
+  "method": "Per-region mean of each variable by calendar (month, day) over 1995-2024, in pcse.base.WeatherDataContainer units, using node 1's conversions (IRRAD MJ/m2/day x 1e6; RAIN mm x 0.1; VAP Magnus on the daily mean dew point; WIND 10 m -> 2 m by a 0.033 m log profile, requested in m/s). 29 February is absent and falls back to 28 February.",
+  "pcse_convention": "pcse.base.WeatherDataContainer: TMIN/TMAX degC, IRRAD J/m2/day, VAP hPa, WIND m/s at 2 m, RAIN cm/day. NOT PCSE's CSV file convention.",
+  "built_at": "2026-09-19T23:47:10+00:00",
+  "regions": [
+    {
+      "region_key": "ia",
+      "state": "IA",
+      "lat": 42.2639,
+      "lon": -93.537,
+      "elev_m": 331.0
+    },
+    {
+      "region_key": "il",
+      "state": "IL",
+      "lat": 40.3194,
+      "lon": -89.2176,
+      "elev_m": 204.0
+    },
+    {
+      "region_key": "mn",
+      "state": "MN",
+      "lat": 44.7087,
+      "lon": -94.6365,
+      "elev_m": 327.0
+    },
+    {
+      "region_key": "ne",
+      "state": "NE",
+      "lat": 41.1658,
+      "lon": -98.3301,
+      "elev_m": 563.0
+    },
+    {
+      "region_key": "in",
+      "state": "IN",
+      "lat": 40.1508,
+      "lon": -86.3355,
+      "elev_m": 287.0
+    },
+    {
+      "region_key": "sd",
+      "state": "SD",
+      "lat": 44.5025,
+      "lon": -98.1339,
+      "elev_m": 386.0
+    },
+    {
+      "region_key": "oh",
+      "state": "OH",
+      "lat": 40.4759,
+      "lon": -83.4936,
+      "elev_m": 317.0
+    },
+    {
+      "region_key": "wi",
+      "state": "WI",
+      "lat": 43.852,
+      "lon": -89.8864,
+      "elev_m": 265.0
+    },
+    {
+      "region_key": "ks",
+      "state": "KS",
+      "lat": 38.6509,
+      "lon": -98.4763,
+      "elev_m": 582.0
+    },
+    {
+      "region_key": "mo",
+      "state": "MO",
+      "lat": 39.1575,
+      "lon": -92.8634,
+      "elev_m": 216.0
+    }
+  ]
+}

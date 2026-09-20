@@ -1,0 +1,368 @@
+name = "US Corn Yield (WOFOST)"
+description = "What this season's weather is doing to the US corn crop, state by state. Takes the daily weather series from the US Corn Crop Weather model and runs WOFOST, the crop model behind the EU's operational yield forecasts, to work out how far each state's corn has developed, when it flowers and ripens, and what yield the season is heading for. Reports that yield against the same model run over the last thirty years of real weather, so you see whether this season is good or bad and by how much, and counts the hot and frosty days that landed during flowering, when corn is most vulnerable. Built to run once a day, straight after the weather model."
+# Prints the corn_yield_snapshot table JSON to stdout; the platform redirects it
+# to the output file. The runner writes corn_yield_trajectory itself, to the
+# path in args.
+run = "docker run --rm -v \"$PWD/run:/run\" ${IMAGE} ${ARGS} > run/corn_yield_snapshot.output.json"
+image = "modelhome/wofost-corn-yield:latest"
+args = ["{input:crop_weather_daily}", "{output:corn_yield_trajectory}"]
+
+# Semantic annotations. Determinism: unlike the upstream weather model, this one
+# makes no network calls at run time. Given the same input document it is
+# exactly reproducible -- the soil, planting, climatology and baseline tables
+# are committed beside the runner, and the WOFOST crop parameters are baked into
+# the image at a pinned commit of ajwdewit/WOFOST_crop_parameters. PCSE does NOT
+# carry them: left to itself it downloads them and caches them for seven days,
+# which would make the model neither offline nor stable. The runner refuses to
+# start if the image's commit is not the one baseline_yields.csv was built
+# against, since the anomaly compares the two and they must be the same crop
+# model. The model inherits the upstream model's forecast caveat for the days
+# that were forecast rather than observed; forecast_fraction reports how much of
+# the simulated season that was.
+determinism = "deterministic"
+expected_runtime = "seconds"
+validity_domain = "US corn regions, in season. One WOFOST run per region on the upstream weather, with one representative point, soil and planting date per state, so values describe a state's corn area, not one field. Rainfed (water-limited) throughout: in states where much of the corn is irrigated, mainly Kansas and Nebraska, the weather response is overstated. Absolute yields are uncalibrated and illustrative; the anomaly and percentile are the usable signal. Stress-day counts cover observed and forecast days only. See the README."
+not_for = "Field-level agronomic decisions (these are state-scale representative points, not your farm), official yield forecasts (use USDA NASS), or reading yield_projection_bu_acre as a prediction of the USDA number -- it is an uncalibrated model yield, not a calibrated forecast. Off-season output is valid but quiet; the signal is most meaningful from about April to October."
+provenance = "Crop model: PCSE/WOFOST 6.0.13 (Wofost72_WLP_FD). Maize parameters: ajwdewit/WOFOST_crop_parameters, baked into the image at a pinned commit. Weather: the upstream US Corn Crop Weather model. Climatology and the 30-year baseline: Open-Meteo ERA5 archive 1995-2024 (CC BY 4.0). Planting dates: USDA NASS Handbook 628. Soil: texture-class parameters, a modelling choice not a survey. See the README."
+
+[resources]
+# One WOFOST run per region over ~200 simulated days, plus reading three small
+# committed tables. The 30-year baseline is precomputed, not run here.
+memory = "512Mi"
+cpu = "1"
+
+[[inputs]]
+# The whole input is the upstream model's crop_weather_daily output. Flow steps
+# bind by required-key set, and ["metadata", "columns", "rows"] matches
+# crop_weather_daily rather than crop_weather_summary, whose required keys are
+# generated_at / metadata / regions.
+#
+# There is deliberately no `default` here. The convention in these bundles is
+# that a schema default is a runnable "Example to paste", and a runnable example
+# for this model is a full weather table -- far too large to paste. This model
+# is meant to be run after the weather model in a flow, which supplies the whole
+# input; the optional fields below all have working defaults in the runner.
+name = "crop_weather_daily"
+description = "The daily weather table from the US Corn Crop Weather model. In a flow this is wired straight from that model's output; nothing else needs filling in."
+
+[inputs.schema]
+type = "object"
+required = ["metadata", "columns", "rows"]
+description = "A US Corn Crop Weather daily table. The regions to model are read from it, so this model never defines its own."
+
+[inputs.schema.properties.metadata]
+type = "object"
+description = "The upstream run's metadata. The date is read from it as the day to report as of."
+
+[inputs.schema.properties.columns]
+type = "array"
+description = "Column names from the upstream table."
+
+[inputs.schema.properties.rows]
+type = "array"
+description = "One weather row per region per day, oldest first."
+
+[inputs.schema.properties.rows.items]
+type = "object"
+required = ["region_key", "date", "is_forecast", "LAT", "LON", "ELEV", "TMIN", "TMAX", "IRRAD", "VAP", "WIND", "RAIN"]
+description = "One region-day of weather, in the crop model's own variables and units."
+
+# Declared in full because flow steps bind by shape: the platform compares these
+# types against the upstream model's own output properties, so anything left
+# undeclared is simply unchecked at wiring time.
+[inputs.schema.properties.rows.items.properties.region_key]
+type = "string"
+description = "The region's stable identifier, e.g. ia. Set by the weather model; this model joins its own tables on it."
+
+[inputs.schema.properties.rows.items.properties.state]
+type = "string"
+description = "Two-letter state code, carried through to the output."
+
+[inputs.schema.properties.rows.items.properties.date]
+type = "string"
+format = "date"
+description = "The calendar day (UTC)."
+
+[inputs.schema.properties.rows.items.properties.is_forecast]
+type = "boolean"
+description = "True when the day came from the forecast rather than the archive. Used to work out how much of the season is still unobserved."
+
+[inputs.schema.properties.rows.items.properties.LAT]
+type = "number"
+unit = "degrees north"
+description = "Latitude of the point the weather was taken from."
+
+[inputs.schema.properties.rows.items.properties.LON]
+type = "number"
+unit = "degrees east"
+description = "Longitude of the point the weather was taken from."
+
+[inputs.schema.properties.rows.items.properties.ELEV]
+type = "number"
+unit = "m"
+description = "Elevation of that point. The crop model needs it for evaporation."
+
+[inputs.schema.properties.rows.items.properties.TMIN]
+type = "number"
+unit = "degC"
+description = "Lowest air temperature of the day."
+
+[inputs.schema.properties.rows.items.properties.TMAX]
+type = "number"
+unit = "degC"
+description = "Highest air temperature of the day."
+
+[inputs.schema.properties.rows.items.properties.IRRAD]
+type = "number"
+unit = "J/m2/day"
+description = "Total sunlight energy reaching the ground over the day."
+
+[inputs.schema.properties.rows.items.properties.VAP]
+type = "number"
+unit = "hPa"
+description = "Average water-vapour pressure, a measure of how humid the air was."
+
+[inputs.schema.properties.rows.items.properties.WIND]
+type = "number"
+unit = "m/s"
+description = "Average wind speed at 2 m above the ground."
+
+[inputs.schema.properties.rows.items.properties.RAIN]
+type = "number"
+unit = "cm"
+description = "Total precipitation over the day, in centimetres, which is what the crop model expects."
+
+[inputs.schema.properties.rows.items.properties.frost_day]
+type = "boolean"
+description = "Whether the weather model flagged the day as a frost day. Counted when it falls in a frost-sensitive stage."
+
+[inputs.schema.properties.rows.items.properties.heat_stress_day]
+type = "boolean"
+description = "Whether the weather model flagged the day as a heat-stress day. Counted when it falls during flowering."
+
+[inputs.schema.properties.date]
+type = "string"
+format = "date"
+description = "The day to report as of, as YYYY-MM-DD. Leave it out to use the upstream run's own date, which is what a flow should do."
+
+[inputs.schema.properties.max_duration]
+type = "integer"
+unit = "d"
+description = "How many days after planting the simulation may run before giving up on the crop ripening. Leave it out for 200, which is long enough for every US corn region."
+
+[inputs.schema.properties.silking_window]
+type = "array"
+description = "The stretch of the crop's development counted as flowering, as two numbers on the development scale where 0 is emergence, 1 is flowering and 2 is ripeness. Leave it out for 0.90 to 1.20, around flowering, when heat hurts corn most."
+
+[inputs.schema.properties.silking_window.items]
+type = "number"
+description = "A point on the development scale."
+
+[inputs.schema.properties.frost_windows]
+type = "array"
+description = "The stretches of development where frost is counted as damaging, each two numbers on the same scale. Leave it out for just after emergence (0.00 to 0.15) and while the grain is still filling (1.70 to 2.00)."
+
+[inputs.schema.properties.frost_windows.items]
+type = "array"
+description = "One two-number range on the development scale."
+
+[inputs.schema.properties.frost_windows.items.items]
+type = "number"
+description = "A point on the development scale."
+
+[[outputs]]
+# One row per region: the headline numbers, and the table node 3 reads.
+name = "corn_yield_snapshot"
+description = "One row per region: how far the crop has developed, the yield the season is heading for, how that compares with the last thirty years, and the stress that landed during flowering."
+
+[outputs.schema]
+type = "object"
+required = ["metadata", "columns", "rows"]
+description = "The per-region snapshot as of the reporting date."
+
+[outputs.schema.properties.metadata]
+type = "object"
+description = "How the run was made: the crop model version and engine, the crop, soil, planting, climatology and thirty-year baseline sources, the anomaly definition, the unit conversion, the stress windows, and the upstream weather run it came from."
+
+[outputs.schema.properties.columns]
+type = "array"
+description = "Column names, in order. Every row has exactly these keys."
+
+[outputs.schema.properties.rows]
+type = "array"
+description = "One object per region."
+
+[outputs.schema.properties.rows.items]
+type = "object"
+required = ["region_key", "state", "date", "stage_name", "yield_projection_kg_ha", "yield_baseline_kg_ha", "yield_anomaly_pct", "yield_percentile_rank", "heat_stress_days_in_silking_window", "frost_days_in_sensitive_window"]
+
+[outputs.schema.properties.rows.items.properties.region_key]
+type = "string"
+description = "The region's stable identifier, e.g. ia. It comes from the weather model; downstream models join on it."
+
+[outputs.schema.properties.rows.items.properties.state]
+type = "string"
+description = "Two-letter state code."
+
+[outputs.schema.properties.rows.items.properties.date]
+type = "string"
+format = "date"
+description = "The day this snapshot describes."
+
+[outputs.schema.properties.rows.items.properties.dvs]
+type = "number"
+description = "How far the crop has developed, from 0 when it comes up, through 1 when it flowers, to 2 when it is ripe. Empty before the crop emerges; the schema format cannot express that, so treat it as optional."
+
+[outputs.schema.properties.rows.items.properties.stage_name]
+type = "string"
+description = "The same thing in words, e.g. late vegetative growth, silking (flowering), grain filling."
+
+[outputs.schema.properties.rows.items.properties.days_to_anthesis]
+type = "integer"
+unit = "d"
+description = "Days until the crop flowers. Negative once flowering has passed."
+
+[outputs.schema.properties.rows.items.properties.days_to_maturity]
+type = "integer"
+unit = "d"
+description = "Days until the crop is ripe. Negative once it is."
+
+[outputs.schema.properties.rows.items.properties.date_anthesis]
+type = "string"
+format = "date"
+description = "The day the crop flowers, as the model projects it."
+
+[outputs.schema.properties.rows.items.properties.date_maturity]
+type = "string"
+format = "date"
+description = "The day the crop is ripe, as the model projects it."
+
+[outputs.schema.properties.rows.items.properties.yield_projection_kg_ha]
+type = "number"
+unit = "kg/ha"
+description = "The grain yield this season is heading for, using the weather so far plus the forecast plus normal weather for whatever is left. Uncalibrated: compare it with the baseline below, not with USDA figures."
+
+[outputs.schema.properties.rows.items.properties.yield_baseline_kg_ha]
+type = "number"
+unit = "kg/ha"
+description = "What the same model yields in a normal year: the middle of thirty runs over the last thirty years of real weather, everything else held the same."
+
+[outputs.schema.properties.rows.items.properties.yield_projection_bu_acre]
+type = "number"
+unit = "bu/acre"
+description = "The projected yield in bushels per acre, for readability only. This is an uncalibrated model yield, not a forecast of the USDA number."
+
+[outputs.schema.properties.rows.items.properties.yield_anomaly_pct]
+type = "number"
+unit = "%"
+description = "How far above or below a normal year this season's yield is. This is the number downstream price models use, because it cancels out the model's uncalibrated absolute level. Always present."
+
+[outputs.schema.properties.rows.items.properties.yield_percentile_rank]
+type = "number"
+unit = "%"
+description = "Where this season sits among the last thirty: 70 means it beats seven of every ten. More reliable than the percentage when the good and bad years are far apart. Always present."
+
+[outputs.schema.properties.rows.items.properties.heat_stress_days_in_silking_window]
+type = "integer"
+unit = "d"
+description = "How many hot days landed while the crop was flowering, when corn is most easily damaged. The headline weather-versus-lifecycle number. Counts observed and forecast days only."
+
+[outputs.schema.properties.rows.items.properties.frost_days_in_sensitive_window]
+type = "integer"
+unit = "d"
+description = "How many frost days landed just after the crop came up or while the grain was still filling. Counts observed and forecast days only."
+
+[outputs.schema.properties.rows.items.properties.water_stress_indicator]
+type = "number"
+description = "How well watered the crop was over its life, from 0 to 1, where 1 means it never went short. Averaged over the days the crop was growing."
+
+[outputs.schema.properties.rows.items.properties.forecast_fraction]
+type = "number"
+description = "How much of the simulated season was not yet observed, from 0 to 1. It falls towards 0 as the season progresses and the projection firms up."
+
+[outputs.schema.properties.rows.items.properties.planting_date]
+type = "string"
+format = "date"
+description = "The day the crop was planted in this run."
+
+[outputs.schema.properties.rows.items.properties.variety_name]
+type = "string"
+description = "Which maize maturity class was used, e.g. Grain_maize_203. Shorter-season classes in the north, longer in the south."
+
+[outputs.schema.properties.rows.items.properties.observed_through]
+type = "string"
+format = "date"
+description = "The last day that came from real observations rather than the forecast."
+
+[[outputs]]
+# The same values plus each region's day-by-day development, for a chart.
+name = "corn_yield_trajectory"
+description = "The same per-region results, each with the crop's day-by-day development and the stress days marked, for charting the season."
+
+[outputs.schema]
+type = "object"
+required = ["generated_at", "metadata", "regions"]
+description = "The same results grouped by region, each with its whole season day by day."
+
+[outputs.schema.properties.generated_at]
+type = "string"
+format = "date-time"
+description = "When the outputs were written (UTC)."
+
+[outputs.schema.properties.metadata]
+type = "object"
+description = "The same run metadata as corn_yield_snapshot."
+
+[outputs.schema.properties.regions]
+type = "array"
+description = "One entry per region: every snapshot field, plus days, the crop's development day by day."
+
+[outputs.schema.properties.regions.items]
+type = "object"
+required = ["region_key", "state", "date", "days"]
+
+[outputs.schema.properties.regions.items.properties.region_key]
+type = "string"
+description = "The region's stable identifier."
+
+[outputs.schema.properties.regions.items.properties.state]
+type = "string"
+description = "Two-letter state code."
+
+[outputs.schema.properties.regions.items.properties.date]
+type = "string"
+format = "date"
+description = "The day this snapshot describes."
+
+[outputs.schema.properties.regions.items.properties.days]
+type = "array"
+description = "One entry per simulated day, oldest first."
+
+[outputs.schema.properties.regions.items.properties.days.items]
+type = "object"
+# dvs is deliberately not required: it is empty before the crop emerges, and the
+# platform's schema format has no way to say "number or empty", so declaring it
+# required would be a promise the runner cannot keep.
+required = ["date", "source"]
+description = "One day: the crop's development, where that day's weather came from, and whether it was a frost or heat-stress day."
+
+[outputs.schema.properties.regions.items.properties.days.items.properties.date]
+type = "string"
+format = "date"
+description = "The calendar day."
+
+[outputs.schema.properties.regions.items.properties.days.items.properties.dvs]
+type = "number"
+description = "How far the crop had developed that day, 0 at emergence to 2 at ripeness. Empty before it came up; the schema format cannot express that, so treat it as optional."
+
+[outputs.schema.properties.regions.items.properties.days.items.properties.source]
+type = "string"
+description = "Where that day's weather came from: observed, forecast, or normals for days still in the future."
+
+[outputs.schema.properties.regions.items.properties.days.items.properties.frost_day]
+type = "boolean"
+description = "Whether the weather model flagged that day as a frost day. Empty for days filled in with normal weather."
+
+[outputs.schema.properties.regions.items.properties.days.items.properties.heat_stress_day]
+type = "boolean"
+description = "Whether the weather model flagged that day as a heat-stress day. Empty for days filled in with normal weather."

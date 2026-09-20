@@ -53,8 +53,10 @@ Consistency with them matters more than any local preference:
   `[[outputs]]` with `[outputs.schema]`. Add the annotation fields Model Home
   validates: `determinism`, `expected_runtime`, `validity_domain`, `not_for`,
   `provenance`, and per-property `unit`. Rationale the schema cannot express
-  goes in TOML comments beside it. `validity_domain` is capped at **600
-  characters** by the platform validator; longer prose belongs in the README.
+  goes in TOML comments beside it. The platform validator caps
+  `validity_domain` at **600 characters** and `provenance` at **400**, and
+  rejects any key listed in a `required` array that has no declared
+  `properties.<key>.type`; longer prose belongs in the README.
 - **Runner I/O contract.** Input JSON file path(s) arrive as positional args.
   The result JSON goes to **stdout** and nothing else does; logs go to stderr.
   The Modelfile's `run` redirects stdout to `run/<output>.output.json`. Further
@@ -129,12 +131,30 @@ essentials this repo depends on:
 - Daily output variables from a `Wofost72_WLP_FD` run: `DVS`, `LAI`, `RD`,
   `RFTRA`, `SM`, `TAGP`, `TRA`, `TWLV`, `TWRT`, `TWSO`, `TWST`, `WWLOW`.
   Summary output carries `DOS`, `DOA`, `DOM`, `TWSO`, `LAIMAX`.
-- **Crop parameters ship inside the pip package.** `YAMLCropDataProvider()`
-  needs no download and offers maize varieties `Grain_maize_201` ... `_205`,
-  `Fodder_maize_nl` and `Maize_VanHeemst_1988`. The `20x` series is a
-  maturity-class ladder (TSUM1/TSUM2 = 695/800, 695/860, 775/880, 855/900,
-  935/920), which is how a north-to-south US relative-maturity gradient is
-  expressed. Provenance is `ajwdewit/WOFOST_crop_parameters`.
+- **Crop parameters do NOT ship inside the pip package**, whatever a warm
+  developer cache suggests. `YAMLCropDataProvider()` with no `fpath` downloads
+  `ajwdewit/WOFOST_crop_parameters` from GitHub and caches it **for seven days**,
+  so a bundle that relies on it is neither offline nor stable: it fails with no
+  network, and starts failing a week after the image was built even with one.
+  Bake the repository into the image at a pinned commit and pass `fpath`. It
+  offers maize varieties `Grain_maize_201` ... `_205`, `Fodder_maize_nl` and
+  `Maize_VanHeemst_1988`; the `20x` series is a maturity-class ladder
+  (TSUM1/TSUM2 = 695/800, 695/860, 775/880, 855/900, 935/920), which is how a
+  north-to-south US relative-maturity gradient is expressed.
+- **Pin the crop parameters, and check the pin.** Anything precomputed against
+  those parameters (a baseline distribution, a calibration) must record the
+  exact commit it used, and the runner must refuse to run against a different
+  one. Otherwise a parameter change silently makes a precomputed comparison
+  wrong while the metadata still claims the two match -- a wrong answer, which
+  is worse than a failed run.
+- **The Modelfile schema format has no nullable type.** `schema_type` requires a
+  plain string, so `["number", "null"]` is not expressible. A field that can be
+  empty therefore must not appear in any `required` list -- and if a required
+  field can go null, fix the model rather than the declaration.
+- **PCSE writes to stdout on first import.** Into a fresh home directory it
+  prints `Building PCSE demo database at: ... OK`. Every runner here redirects
+  stdout to stderr around the PCSE import, because the platform parses stdout
+  with `json.loads` and that one line breaks the first run in a fresh container.
 - `DummySoilDataProvider()` is a generic medium soil: `SM0` 0.4, `SMFCF` 0.3,
   `SMW` 0.1, `RDMSOL` 120, `CRAIRC` 0.06, `K0`/`SOPE`/`KSUB` 10.0. It is a
   starting point, not a regional soil; see the bundle's plan for what replaces
@@ -210,20 +230,116 @@ implementation land together in one pull request:
 Repo-wide conventions live in this file; briefs reference them rather than
 restating them.
 
-## The `corn-yield/` bundle (planned, not yet built)
+## The `corn-yield/` bundle
 
 **US Corn Yield (WOFOST).** Takes a `crop-weather` output and returns, per US
-corn region, the crop's current development stage, a full-season projected
-yield, a weather-driven yield anomaly against a normal-weather baseline, and
-stage-specific stress diagnostics. Brief:
-`docs/features/0001-corn-yield.md`; plan with every decision and its reasoning:
-`docs/plans/0001-corn-yield.md`.
+corn region, the crop's development stage, a full-season projected yield, a
+weather-driven yield anomaly and percentile rank against a thirty-year
+normal-weather distribution, and heat and frost days counted inside the
+lifecycle windows where they matter. Brief:
+`docs/features/0001-corn-yield.md`; plan with every decision and its reasoning,
+including the conflicts found while building it:
+`docs/plans/0001-corn-yield.md`. User-facing documentation:
+[`corn-yield/README.md`](./corn-yield/README.md).
+
+```
+corn-yield/
+  Modelfile.toml          one input (node 1's table), two JSON outputs
+  Dockerfile              multi-stage: crop parameters pinned, then the model
+  runner.py               the model
+  soils.csv               per-region water-holding parameters
+  planting_dates.csv      per-region planting date and maturity class
+  climatology.csv         per-region daily normals, 1995-2024 (3,650 rows)
+  baseline_yields.csv     30 normal-weather yields per region (300 rows)
+  *.meta.json             provenance for the two built tables
+  build_climatology.py    one-time normals build (not in the image)
+  build_baselines.py      one-time baseline build (not in the image)
+  check_yield.py          validation incl. real WOFOST runs (not in the image)
+  sample_input.json       a real node 1 output: Iowa and Nebraska, 2026
+  README.md
+```
+
+### Design notes
+
+- **The baseline is thirty real years, not a mean climatology.** This is the
+  one thing to understand before changing anything here. Driving a baseline
+  season with mean-by-calendar-day normals was the original design and it is
+  wrong: averaging preserves a season's rainfall *total* but destroys its
+  *structure* (for Iowa, 148 wet days instead of 59 and no dry day at all), and
+  WOFOST's free-draining water balance responds to structure. The baseline crop
+  starved and anomalies came out at +45% and +856%. The baseline is now the
+  median of one run per year of 1995-2024 on real daily weather, precomputed by
+  `build_baselines.py` because it never depends on the input. The climatology is
+  still used, but only to complete the tail of a season whose profile is already
+  charged by real weather, where the objection does not apply.
+- **`WAV` is the footgun.** PCSE's `DummySoilDataProvider` with `WAV=100` gives
+  the crop 100 cm of available water, so it is never short and `WLP_FD`
+  degenerates into `PP`: a 1.2% gap on the sample, and a yield anomaly that
+  measures nothing. `soils.csv` sets realistic per-region values (9.6-17.6 cm)
+  and `check_yield.py` asserts the water balance is live for every region.
+- **One simulation per region at run time.** The projection is the only WOFOST
+  run the model does; the thirty baseline runs are precomputed.
+- **Two JSON outputs**, `corn_yield_snapshot` (the table node 3 reads) and
+  `corn_yield_trajectory` (nested, with the daily DVS series). The CSV beside
+  them is for off-platform use only.
+- **Percentage and percentile.** The yield distribution is strongly skewed
+  (Iowa spans 81 to 13,413 kg/ha over the period), so `yield_percentile_rank`
+  ships beside `yield_anomaly_pct`: magnitude from one, context from the other.
+- **No overlay.** Stage-specific stress is reported as day counts only; every
+  yield figure is pure WOFOST. The README says how a silking-heat adjustment
+  would be added and what it would need first.
+- **Angstrom coefficients are committed**, estimated once from the thirty-year
+  radiation series and used by both the baseline and the projection, so the two
+  differ in nothing but weather. This deliberately does not use node 1's
+  per-run estimate.
+
+### Verified results (2026-09-19)
+
+- `check_yield.py`: **54/54 checks pass**. That includes real `Wofost72_WLP_FD`
+  runs reaching maturity, the water balance binding for every region (a quarter
+  of the rain costs Iowa and Nebraska real yield), the hand-worked stress-window
+  cases including both window edges, the anomaly arithmetic, and an unknown
+  `region_key` exiting 1 with a readable message naming the key and the table.
+- **AC-6 demonstrated:** injecting a hot, dry fortnight over each region's own
+  projected flowering date moves Iowa from +22.02% to **-34.2%** (silking heat
+  days 0 -> 11) and Nebraska from +51.9% to **+7.96%** (5 -> 11).
+- Sample run (2026-09-19, Iowa and Nebraska): ia mature, anthesis 2026-07-05,
+  maturity 2026-08-24, 10,053 kg/ha (160 bu/acre), anomaly +22.02%, percentile
+  70, mean RFTRA 0.90, 0 silking heat days; ne mature, anthesis 2026-07-03,
+  maturity 2026-08-18, 5,979 kg/ha (95 bu/acre), anomaly +51.9%, percentile 80,
+  mean RFTRA 0.79, **5 silking heat days**. About 30 s for two regions.
+- **Docker build and run** produce rows, columns and trajectory **identical** to
+  the local run, metadata identical apart from `generated_at`, with
+  `--network none`.
+- **Modelfile validates** (`OK`, no annotation warnings), and
+  `check_schema_compatibility` confirms the input binds to node 1's
+  `crop_weather_daily` and is correctly refused by `crop_weather_summary`.
+- Baseline medians (kg/ha, 1995-2024): mn 10,131, wi 8,816, ia 8,238, oh 8,165,
+  il 7,631, in 7,567, mo 6,252, ne 3,936, sd 3,098, ks 1,491. The low western
+  numbers are dryland simulations of states whose corn is substantially
+  irrigated -- a documented limitation, not a bug.
+- **Copilot review (PR #1):** four findings, all addressed -- an unpinned
+  crop-parameter baseline, required-but-nullable output fields, silent gap
+  filling, and a stale annotation. Checks went 54 -> **82/82**. Rebuilding the
+  baseline against the pinned checkout changed no committed number.
+- **Not yet verified:** the Model Home import (AC-10), which needs a signed-in
+  human at the Auth0 login.
+
+### Task list
+
+1. AC-10: add the model on the local Model Home stack from the branch subfolder
+   URL and run it with node 1's output.
+2. Mark the PR ready once AC-10 passes; John merges.
+3. After merge: register on Model Home from `main` and compose it after
+   `crop-weather` in a daily flow.
+4. Follow-ups, detailed in the bundle README: soils from gNATSGO/SSURGO, an
+   irrigation share per region, a parameterised silking-heat overlay, and
+   crop-reporting-district granularity.
 
 ## Task list
 
-1. Review and approve `docs/plans/0001-corn-yield.md`, then `/feat run corn-yield`.
-2. Create `modelhome/wofost-bundles` on GitHub and push `main`.
-3. After the PR merges: register the model on Model Home from `main` and compose
-   it after `crop-weather` in a daily flow.
-4. Sibling repo still to come: `ag-commodity-bundles/corn-price/` (node 3),
-   which consumes this bundle's `yield_anomaly_pct`.
+1. ~~Create `modelhome/wofost-bundles` on GitHub and push `main`.~~ Done
+   2026-09-19.
+2. Finish `corn-yield/` (brief 0001): see that bundle's task list above.
+3. Sibling repo still to come: `ag-commodity-bundles/corn-price/` (node 3),
+   which consumes this bundle's `yield_anomaly_pct` and `yield_percentile_rank`.
