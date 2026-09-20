@@ -72,11 +72,23 @@ estimated days to anthesis and to maturity; plus the daily DVS trajectory over
 the season, so a downstream view can show the crop advancing through stages
 with stress events marked.
 
-**Yield anomaly.** A projection run (observed + forecast + normals) and a
-baseline run (climatology normals for the whole season), with
-`yield_anomaly_pct = (projection - baseline) / baseline`. Absolute WOFOST
-yields are emitted too (kg/ha native, and bu/acre by a documented conversion)
-for diagnostics, clearly labelled uncalibrated.
+**Yield anomaly.** A projection run (observed + forecast + normals) compared
+against a normal-weather baseline, with
+`yield_anomaly_pct = (projection - baseline) / baseline`.
+
+> **Revised during implementation (2026-09-19).** The baseline was originally
+> specified as a WOFOST run on climatology normals for the whole season. That
+> does not work: averaging by calendar day preserves a season's rainfall total
+> but destroys its structure, and the water balance responds to the structure,
+> so the baseline crop starves and every anomaly is inflated. The baseline is
+> now the **median of the same model run once per year over the last thirty
+> years of real daily weather**, precomputed because it depends only on
+> committed data. `yield_percentile_rank` ships alongside the percentage,
+> because the yield distribution is strongly skewed. See C1 in the plan for the
+> measurements and the decision.
+
+Absolute WOFOST yields are emitted too (kg/ha native, and bu/acre by a
+documented conversion) for diagnostics, clearly labelled uncalibrated.
 
 **Stage-specific stress diagnostics.** Intersect node 1's `heat_stress_day` and
 `frost_day` flags with the DVS-derived sensitive windows -- the silking/anthesis
@@ -122,10 +134,11 @@ convention.
   `WeatherDataProvider` built from node 1's series, and produces a plausible
   DVS trajectory reaching maturity. A committed check demonstrates a
   full-season run and the phenology outputs.
-- **AC-6** -- The yield anomaly is computed as (projection - normals baseline) /
-  normals baseline. Switching the driving weather -- injecting a hot, dry spell
-  in the silking window into the sample input -- moves the anomaly in the
-  expected direction, demonstrated by a committed check.
+- **AC-6** -- The yield anomaly is computed as (projection - baseline) /
+  baseline, the baseline being the thirty-year normal-weather distribution's
+  median (revised; see above). Switching the driving weather -- injecting a hot,
+  dry spell in the silking window into the sample input -- moves the anomaly in
+  the expected direction, demonstrated by a committed check.
 - **AC-7** -- Stage-specific stress diagnostics correctly intersect node 1's
   stress-day flags with the DVS sensitive windows, shown against a hand-worked
   example, and the overlay is separable and labelled, with the pure-WOFOST
@@ -142,8 +155,8 @@ convention.
 - **AC-11** -- The bundle README documents: the PCSE/WOFOST version and run
   configuration; the crop-parameter and soil sources; the planting-date and
   climatology-normals sources, periods and methods; the observed + forecast +
-  normals season-completion approach; the yield-anomaly definition and why it
-  avoids calibration; the stage-stress overlay and its limitations (base WOFOST
+  normals season-completion approach; the yield-anomaly definition, why it
+  avoids calibration, and why the baseline is real years rather than normals; the stage-stress overlay and its limitations (base WOFOST
   does not model corn heat-sterility at silking); the kg/ha -> bu/acre
   conversion; and the determinism and offline semantics.
 

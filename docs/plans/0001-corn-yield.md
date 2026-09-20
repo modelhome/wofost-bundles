@@ -1,7 +1,7 @@
 # Plan: Corn yield
 
 Source brief: docs/features/0001-corn-yield.md
-Status: blocked
+Status: implemented, except AC-10 (blocked: the Model Home import needs a signed-in human)
 Planned against commit: b408b0b (chore: scaffold wofost-bundles)
 Base commit: b408b0b (main at branch creation)
 
@@ -330,17 +330,17 @@ network, per AC-3 and AC-4.
 
 | ID | Acceptance criterion | Implementation | Verification | Status |
 |---|---|---|---|---|
-| AC-1 | Repo scaffold matching siblings | `.gitignore`, `.dockerignore`, `LICENSE`, `README.md`, `CLAUDE.md`, `.claude/skills/feat/`, `corn-yield/` (already committed at b408b0b) | `ls`; diff vendored feat against `agromet-bundles` | planned |
-| AC-2 | Bundle files and tables present | `corn-yield/{Modelfile.toml,Dockerfile,runner.py,sample_input.json,soils.csv,planting_dates.csv,climatology.csv,build_climatology.py,check_yield.py,README.md}` | `ls corn-yield` | planned |
-| AC-3 | Sample input runs end to end | D12; `runner.py` | `python corn-yield/runner.py corn-yield/sample_input.json` writes both outputs | planned |
-| AC-4 | Docker build and run reproduce it | `Dockerfile` | `docker build` then `docker run --network none`; diff against the local run | planned |
-| AC-5 | Water-limited run, plausible DVS to maturity | `build_provider`, `run_wofost` in `runner.py` | `check_yield.py`: DVS reaches 2.0, `DOA`/`DOM` present, `TWSO` in 5-25 t/ha | planned |
-| AC-6 | Anomaly moves the right way on a hot, dry silking spell | `yield_anomaly_pct` (D5) | `check_yield.py` perturbs the sample input in the silking window and asserts the anomaly falls | planned |
-| AC-7 | Stress windows intersect correctly; overlay separable | `stress_windows` in `runner.py` (D6) | `check_yield.py` hand-worked case; assert no `*_adjusted` field exists | planned |
-| AC-8 | Tables keyed on node 1's key; unknown key fails loudly | table loaders (D11) | `check_yield.py` feeds an unknown `region_key` and asserts exit 1 with the key named | planned |
-| AC-9 | Full region set from a node 1 output, no parameters | `required = []` on every optional field | run a full 10-region node 1 output with no other input | planned |
-| AC-10 | Model Home import from the subfolder URL works | `Modelfile.toml` | manual: paste the branch subfolder URL at `/models/new/repo` and run | planned |
-| AC-11 | README documents every modelling choice | `corn-yield/README.md` | review against the AC-11 list, incl. the D4 and D6 future-work paragraphs | planned |
+| AC-1 | Repo scaffold matching siblings | `.gitignore`, `.dockerignore`, `LICENSE`, `README.md`, `CLAUDE.md`, `.claude/skills/feat/`, `corn-yield/` | `ls`; vendored `feat` diffs identical to `agromet-bundles` | **pass** |
+| AC-2 | Bundle files and tables present | `corn-yield/`: Modelfile, Dockerfile, runner, 4 tables + 2 meta files, 2 build scripts, check, sample, README | `ls corn-yield` | **pass** |
+| AC-3 | Sample input runs end to end | `sample_input.json` = a real node 1 output (ia, ne, 554 rows, 2026-01-01..10-04) | runner writes both outputs; 2 snapshot rows, 2 trajectories | **pass** |
+| AC-4 | Docker build and run reproduce it | multi-stage `Dockerfile` | `docker run --network none`: rows, columns and trajectory **identical** to local; only `generated_at` differs | **pass** |
+| AC-5 | Water-limited run, plausible DVS to maturity | `build_provider`, `run_wofost` | `check_yield.py`: maturity and anthesis reached, season 90-200 d, yields 0.5-25 t/ha, engine is `WLP_FD`; water balance live per region (a quarter of the rain costs ia 44.7%, ne 97.9%) | **pass** |
+| AC-6 | Anomaly moves the right way on a hot, dry silking spell | `yield_anomaly_pct` (D5, revised by C1) | `check_yield.py` perturbs each region's own flowering date: ia +22.02% -> **-34.2%**, ne +51.9% -> **+7.96%**; silking heat days rise 0->11 and 5->11; percentile falls | **pass** |
+| AC-7 | Stress windows intersect correctly; overlay separable | `stress_in_windows`, `STAGE_BANDS` | hand-worked six-day case, both window edges, uncovered days contribute nothing; no `*_adjusted` column exists; anomaly equals (projection-baseline)/baseline exactly | **pass** |
+| AC-8 | Tables keyed on node 1's key; unknown key fails loudly | table loaders, `process_region` | all four tables cover node 1's ten keys; an unknown `zz` exits 1 naming the key and `soils.csv`, with no traceback | **pass** |
+| AC-9 | Full region set from a node 1 output, no parameters | `required = []` on every optional field | all four tables carry all ten regions; the sample runs with the document alone. **Run on two regions, not ten** -- see Risks | **pass (partial evidence)** |
+| AC-10 | Model Home import from the subfolder URL works | `Modelfile.toml` | Modelfile validates `OK`; binding to node 1's `crop_weather_daily` verified via `check_schema_compatibility`. **Import itself not run** -- needs a signed-in human | **blocked** |
+| AC-11 | README documents every modelling choice | `corn-yield/README.md` | covers PCSE version and configuration, all four table sources, season completion, the anomaly definition and why the normals baseline was abandoned, the overlay's absence and how to add one, the bu/acre conversion, determinism, and 7 limitations incl. irrigation | **pass** |
 
 ## Verification
 
@@ -350,11 +350,16 @@ to record because there is no prior code.
 
 | Command | Purpose | Baseline result | Final result |
 |---|---|---|---|
-| `python corn-yield/runner.py corn-yield/sample_input.json > run/corn_yield_snapshot.output.json` | the model runs standalone (AC-3) | n/a (new) | pending |
-| `uv run --no-project --python 3.12 --with pcse==6.0.13 --with numpy python corn-yield/check_yield.py run/corn_yield_snapshot.output.json` | every modelling assertion (AC-5 to AC-8) | n/a (new) | pending |
-| `cd corn-yield && docker build -t wofost-corn-yield:local .` | the image builds from the bundle context (AC-4) | n/a (new) | pending |
-| `docker run --rm --network none wofost-corn-yield:local` | no network needed; output identical to local (AC-4) | n/a (new) | pending |
-| `uv run python -m orchestration.modelfile validate <path>/corn-yield/Modelfile.toml` | Modelfile valid, no annotation warnings; run from the `modelhome` repo | n/a (new) | pending |
+| `python corn-yield/runner.py corn-yield/sample_input.json run/corn_yield_trajectory.output.json > run/corn_yield_snapshot.output.json` | the model runs standalone (AC-3) | n/a (new code) | **pass**, ~30 s for 2 regions |
+| `python corn-yield/check_yield.py run/corn_yield_snapshot.output.json` | every modelling assertion (AC-5 to AC-8) | n/a (new code) | **54/54 pass** |
+| `cd corn-yield && docker build -t wofost-corn-yield:local .` | the image builds from the bundle context (AC-4) | n/a (new code) | **pass** |
+| `docker run --rm --network none -v "$PWD/run:/run" wofost-corn-yield:local ...` | no network needed; output identical to local (AC-4) | n/a (new code) | **pass**, identical apart from `generated_at` |
+| `uv run python -m orchestration.modelfile validate .../corn-yield/Modelfile.toml` | Modelfile valid, no annotation warnings | n/a (new code) | **OK** |
+| `check_schema_compatibility(node2 input, node1 outputs)` | the flow actually binds (D1) | n/a (new code) | binds `crop_weather_daily`, refuses `crop_weather_summary` |
+
+Both `docker build` and `build_climatology.py` / `build_baselines.py` need
+network; the model itself does not. There was no pre-existing code, so no
+baseline could regress.
 
 ## Implementation steps
 
@@ -445,7 +450,20 @@ docs/plans/0001-corn-yield.md    status, base commit, verification results
   the coldest region. Step 7 should assert every region reaches `DOM` rather
   than silently truncating, and widen the bound if a northern region fails.
 - **AC-10 needs a signed-in human.** The local stack is behind Auth0, exactly as
-  node 1's AC-9 was; expect to hand that step to John.
+  node 1's AC-9 was; this step is handed to John and the pull request is a draft
+  until it passes.
+- **AC-9 was verified on two regions, not ten.** All four committed tables carry
+  all ten of node 1's keys and the check asserts that, but the end-to-end run
+  used the two-region sample. A full ten-region node 1 output should be run once
+  before the model goes on a schedule.
+- **Kansas and Nebraska are modelled as dryland** although much of their corn is
+  irrigated, so their absolute yields read far low (Kansas's baseline median is
+  about 1,500 kg/ha) and their weather response is overstated. The anomaly is
+  still a reasonable weather signal. An irrigation share per region is the fix
+  and is listed as follow-up in the bundle README.
+- **Planting dates are transcribed** from USDA Handbook 628 rather than
+  machine-read, so they carry transcription risk and should be re-checked
+  against the current edition.
 
 ## Deviations and conflicts found during run
 
@@ -535,3 +553,44 @@ heat-stress days in the silking window**. The lifecycle diagnostic works.
   30-year daily request is large enough that consecutive regions trip it; the
   limit clears on a wall-clock minute, so a seconds-scale backoff cannot
   recover. Not a modelling change.
+
+### C4. Two further conflicts found while verifying, both fixed
+
+Neither was foreseen by the plan; both would have broken the model on the
+platform.
+
+- **PCSE's crop parameters are not in the pip package.** D2 recorded that
+  `YAMLCropDataProvider()` "ships inside the pip package; no download". That is
+  wrong, and a warm developer cache hides it: with no `fpath` the provider
+  downloads `ajwdewit/WOFOST_crop_parameters` from GitHub and caches the result
+  **for seven days**. The first `docker run --network none` failed outright, and
+  even with network the image would have started failing a week after it was
+  built. Fixed by cloning the repository into the image at a **pinned commit**
+  (`WOFOST_CROP_PARAMETERS_SHA=f0a6491`) in a build stage and passing `fpath`;
+  the runner falls back to PCSE's behaviour off-platform so a developer checkout
+  still runs. The claim is corrected in `CLAUDE.md`.
+- **PCSE writes to stdout on first import.** Into a fresh home directory it
+  prints `Building PCSE demo database at: ... OK` on **stdout**, which is the
+  channel the platform parses with `json.loads`. Every first run in a fresh
+  container would have produced unparseable output. Fixed by importing PCSE with
+  stdout pointed at stderr in `runner.py`, so the guarantee holds wherever the
+  runner is executed rather than only in the image. Recorded in `CLAUDE.md` as a
+  convention for every bundle in this repo.
+
+### C5. Deviations from the plan arising from the C1 decision
+
+John chose the precomputed thirty-year ensemble and the additive percentile
+rank. The consequences, all recorded in the brief and the bundle README:
+
+- **`build_baselines.py` and `baseline_yields.csv` / `baselines.meta.json` are
+  new files** not in the plan's file list.
+- **The runner does one WOFOST run per region, not two.** The baseline is read
+  from the committed table.
+- **`yield_percentile_rank` and `baseline_note` are new output columns.**
+- **Angstrom coefficients now come from the committed baseline build**, not
+  from node 1's per-run estimate as D2 specified. The anomaly requires the
+  projection and the baseline to differ in nothing but weather, and a thirty-year
+  estimate is more stable than one from a partial season.
+- **Overriding `planting_date` or `variety_name` suppresses the anomaly**, since
+  the committed baseline no longer describes the configuration being run. The
+  projection and phenology are still produced and `baseline_note` says why.

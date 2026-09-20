@@ -1,5 +1,5 @@
 # Keep the per-bundle build context lean. Build context is the bundle subfolder
-# (e.g. `cd thermal-indices && docker build .`), so this mostly matters for files
+# (e.g. `cd corn-yield && docker build .`), so this mostly matters for files
 # that would otherwise sneak in from a wider context.
 .git
 .gitignore
@@ -13,4 +13,5 @@ docs
 **/.venv
 **/run
 **/*.output.json
+**/.climatology-cache
 .DS_Store

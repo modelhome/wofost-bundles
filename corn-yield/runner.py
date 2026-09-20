@@ -14,11 +14,14 @@ For each region in that input it:
    three evaporation terms node 1 deliberately leaves to this node;
 2. splices the driving weather as observed + forecast + climatology normals, so
    a full season can be simulated mid-season;
-3. runs WOFOST twice in water-limited mode -- once on that spliced series
-   (the projection) and once on normals for the whole season (the baseline);
-4. reports development stage, days to anthesis and maturity, the two yields,
-   the weather-driven yield anomaly between them, and heat and frost days
-   counted inside the lifecycle windows where they matter.
+3. runs WOFOST once in water-limited mode on that spliced series (the
+   projection), and compares it with the committed normal-weather distribution
+   in baseline_yields.csv -- the same model run over each of the last thirty
+   years of real weather, precomputed because it never depends on the input;
+4. reports development stage, days to anthesis and maturity, the projected and
+   baseline yields, the weather-driven yield anomaly and percentile rank between
+   them, and heat and frost days counted inside the lifecycle windows where they
+   matter.
 
 Outputs:
 
@@ -29,8 +32,11 @@ Outputs:
 - corn_yield_snapshot.csv beside the trajectory. Model Home keeps only JSON
   outputs, so that file exists only when the model is run off-platform.
 
-This model makes no network calls. It is a pure function of its input and the
-committed tables (soils.csv, planting_dates.csv, climatology.csv).
+This model makes no network calls at run time. It is a pure function of its
+input and the committed tables (soils.csv, planting_dates.csv, climatology.csv,
+baseline_yields.csv). PCSE's crop parameters would be downloaded on first use,
+so the Dockerfile bakes them into the image at a pinned commit and
+crop_data_provider() reads that local copy.
 
 Units are PCSE's WeatherDataContainer convention, matching node 1: TMIN/TMAX
 degC, IRRAD J/m2/day, VAP hPa, WIND m/s at 2 m, RAIN cm/day. Logs go to stderr;
@@ -42,11 +48,23 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from pcse.base import ParameterProvider
-from pcse.base.weather import WeatherDataContainer, WeatherDataProvider
-from pcse.input import YAMLCropDataProvider, WOFOST72SiteDataProvider
-from pcse.models import Wofost72_WLP_FD
-from pcse.util import reference_ET
+# The first time PCSE is imported into a fresh home directory it builds a demo
+# database and announces it on STDOUT ("Building PCSE demo database at: ... OK").
+# This runner's contract is that stdout carries only the result JSON, and the
+# platform parses stdout with json.loads, so that one line would break every
+# first run in a fresh container. Import PCSE with stdout pointed at stderr;
+# doing it here rather than in the Dockerfile keeps the guarantee wherever the
+# runner is executed.
+_REAL_STDOUT = sys.stdout
+sys.stdout = sys.stderr
+try:
+    from pcse.base import ParameterProvider
+    from pcse.base.weather import WeatherDataContainer, WeatherDataProvider
+    from pcse.input import YAMLCropDataProvider, WOFOST72SiteDataProvider
+    from pcse.models import Wofost72_WLP_FD
+    from pcse.util import reference_ET
+finally:
+    sys.stdout = _REAL_STDOUT
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_INPUT_PATH = HERE / "sample_input.json"
@@ -55,6 +73,12 @@ SOILS_PATH = HERE / "soils.csv"
 PLANTING_PATH = HERE / "planting_dates.csv"
 CLIMATOLOGY_PATH = HERE / "climatology.csv"
 CLIMATOLOGY_META_PATH = HERE / "climatology.meta.json"
+BASELINES_PATH = HERE / "baseline_yields.csv"
+BASELINES_META_PATH = HERE / "baselines.meta.json"
+# The WOFOST crop parameter repository, baked into the image by the Dockerfile
+# at a pinned commit. See crop_data_provider() for why this is not left to
+# PCSE's own download-and-cache behaviour.
+CROP_PARAMETERS_DIR = HERE / "crop_parameters"
 
 # --- PCSE contract -----------------------------------------------------------
 # Node 1 emits exactly these, in pcse.base.WeatherDataContainer units.
@@ -98,7 +122,7 @@ SNAPSHOT_COLUMNS = [
     "dvs", "stage_name", "days_to_anthesis", "days_to_maturity",
     "date_anthesis", "date_maturity",
     "yield_projection_kg_ha", "yield_baseline_kg_ha", "yield_projection_bu_acre",
-    "yield_anomaly_pct",
+    "yield_anomaly_pct", "yield_percentile_rank", "baseline_note",
     "heat_stress_days_in_silking_window", "frost_days_in_sensitive_window",
     "water_stress_indicator",
     "forecast_fraction", "planting_date", "variety_name", "observed_through",
@@ -149,6 +173,55 @@ def load_climatology_meta():
     if not CLIMATOLOGY_META_PATH.exists():
         raise RunError("missing committed table: climatology.meta.json")
     return json.loads(CLIMATOLOGY_META_PATH.read_text())
+
+
+def load_baselines():
+    """
+    {region_key: [yield, ...]} -- the normal-weather yield distribution.
+
+    Built once by build_baselines.py: one WOFOST run per historical year on that
+    year's real daily weather, with the same soil, planting date, variety and
+    engine this runner uses. Precomputed because it depends only on committed
+    data, which keeps this model to one simulation per region.
+    """
+    if not BASELINES_PATH.exists():
+        raise RunError("missing committed table: baseline_yields.csv")
+    distribution = {}
+    with BASELINES_PATH.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            distribution.setdefault(row["region_key"], []).append(float(row["yield_kg_ha"]))
+    if not distribution:
+        raise RunError("baseline_yields.csv has no rows")
+    for key in distribution:
+        distribution[key].sort()
+    return distribution
+
+
+def load_baselines_meta():
+    if not BASELINES_META_PATH.exists():
+        raise RunError("missing committed table: baselines.meta.json")
+    return json.loads(BASELINES_META_PATH.read_text())
+
+
+def median(sorted_values):
+    count = len(sorted_values)
+    middle = count // 2
+    if count % 2:
+        return sorted_values[middle]
+    return (sorted_values[middle - 1] + sorted_values[middle]) / 2.0
+
+
+def percentile_rank(sorted_values, value):
+    """
+    Where this season sits in the historical distribution, 0-100.
+
+    The share of baseline years that yielded less than the projection. Reported
+    alongside the percentage anomaly because the yield distribution is strongly
+    skewed -- a rainfed season can fail almost completely -- which makes a
+    percentage against the median a noisy statistic on its own.
+    """
+    below = sum(1 for entry in sorted_values if entry < value)
+    return round(100.0 * below / len(sorted_values), 1)
 
 
 def normals_for(normals, region_key, day):
@@ -230,10 +303,17 @@ def group_rows(document):
     return grouped
 
 
-def angstrom_for(document, region_key):
-    """Node 1's per-region Angstrom coefficients, so both nodes use one number."""
-    angstrom = (document.get("metadata") or {}).get("angstrom") or {}
-    entry = angstrom.get(region_key) or {}
+def angstrom_for(baselines_meta, region_key):
+    """
+    The region's Angstrom coefficients, from the committed baseline build.
+
+    reference_ET uses these to estimate net longwave radiation, so they feed the
+    water balance. The anomaly is only clean if the projection and the baseline
+    differ in nothing but weather, so both use this one committed pair rather
+    than node 1's per-run estimate, which is made from a partial season and
+    moves between runs.
+    """
+    entry = (baselines_meta.get("regions") or {}).get(region_key) or {}
     return (
         float(entry.get("angstrom_a", ANGSTROM_A_DEFAULT)),
         float(entry.get("angstrom_b", ANGSTROM_B_DEFAULT)),
@@ -359,14 +439,31 @@ _CROP_DATA = None
 
 def crop_data_provider(variety_name, region_key):
     """
-    PCSE's own maize parameters, which ship inside the pip package.
+    PCSE's own maize parameters.
 
-    Loaded once: YAMLCropDataProvider reads a directory of YAML files, and
-    rebuilding it per region per run is pure overhead.
+    YAMLCropDataProvider does not carry its parameters inside the package: given
+    no local path it downloads them from GitHub and caches the result for seven
+    days. That would make this model quietly dependent on the network, and would
+    start failing a week after an image was built. The Dockerfile bakes the
+    parameter repository in at a pinned commit, and this reads that local copy.
+
+    Off-platform, with no baked copy present, it falls back to PCSE's own
+    behaviour so a developer checkout still runs.
+
+    Loaded once: rebuilding it per region per run is pure overhead.
     """
     global _CROP_DATA
     if _CROP_DATA is None:
-        _CROP_DATA = YAMLCropDataProvider()
+        if CROP_PARAMETERS_DIR.is_dir():
+            _CROP_DATA = YAMLCropDataProvider(fpath=str(CROP_PARAMETERS_DIR))
+        else:
+            try:
+                _CROP_DATA = YAMLCropDataProvider()
+            except Exception as exc:
+                raise RunError(
+                    f"could not load the WOFOST crop parameters: {exc}. They are normally "
+                    f"baked into the image at {CROP_PARAMETERS_DIR}; outside the image PCSE "
+                    f"fetches them from GitHub, which needs network access once.") from exc
     try:
         _CROP_DATA.set_active_crop(CROP_NAME, variety_name)
     except Exception as exc:
@@ -488,6 +585,10 @@ def process_region(region_key, region_rows, tables, settings, document):
         raise RunError(
             f"region '{region_key}' appears in the input but has no rows in "
             f"climatology.csv. Rebuild it with build_climatology.py.")
+    if region_key not in tables["baselines"]:
+        raise RunError(
+            f"region '{region_key}' appears in the input but has no rows in "
+            f"baseline_yields.csv. Rebuild it with build_baselines.py.")
 
     soil_row = soils[region_key]
     planting_row = planting[region_key]
@@ -495,7 +596,7 @@ def process_region(region_key, region_rows, tables, settings, document):
     latitude = float(first_row["LAT"])
     longitude = float(first_row["LON"])
     elevation = float(first_row["ELEV"])
-    angstrom_a, angstrom_b = angstrom_for(document, region_key)
+    angstrom_a, angstrom_b = angstrom_for(tables["baselines_meta"], region_key)
 
     observed_days = [row["date"] for row in region_rows if not row["is_forecast"]]
     observed_through = max(observed_days) if observed_days else None
@@ -508,21 +609,17 @@ def process_region(region_key, region_rows, tables, settings, document):
     max_duration = settings["max_duration"]
     last_day = planting_day + timedelta(days=max_duration)
 
-    # The projection: observed + forecast + normals for the remainder.
+    # The projection: observed + forecast + normals for the remainder. The
+    # normals only ever fill the tail of a season whose soil profile is already
+    # charged by real weather, which is why using them here is sound and using
+    # them for a whole baseline season was not -- see README.md.
     projection_series = build_series(
         region_rows, normals, region_key, planting_day, last_day, use_normals_only=False)
-    # The baseline: the same everything, on normal weather for the whole season.
-    baseline_series = build_series(
-        region_rows, normals, region_key, planting_day, last_day, use_normals_only=True)
 
     projection_summary, projection_daily = run_wofost(
         build_provider(projection_series, latitude, longitude, elevation,
                        angstrom_a, angstrom_b, "projection"),
         soil_row, planting_day, variety_name, max_duration, region_key, "projection")
-    baseline_summary, _ = run_wofost(
-        build_provider(baseline_series, latitude, longitude, elevation,
-                       angstrom_a, angstrom_b, "baseline"),
-        soil_row, planting_day, variety_name, max_duration, region_key, "baseline")
 
     if projection_summary.get("DOM") is None:
         raise RunError(
@@ -531,15 +628,31 @@ def process_region(region_key, region_rows, tables, settings, document):
             f"variety and planting date.")
 
     projection_yield = projection_summary.get("TWSO")
-    baseline_yield = baseline_summary.get("TWSO")
-    if projection_yield is None or baseline_yield is None:
+    if projection_yield is None:
         raise RunError(f"region '{region_key}': WOFOST reported no grain yield")
+
+    # The committed baseline was built for the committed planting date and
+    # variety. Overriding either makes it the wrong comparison, so report the
+    # projection but withhold the anomaly rather than publishing a mismatch.
+    baseline_applies = (
+        settings["planting_date"] is None and settings["variety_name"] is None)
+    distribution = tables["baselines"][region_key]
+    baseline_yield = median(distribution)
     if baseline_yield <= 0:
         raise RunError(
-            f"region '{region_key}': the normal-weather baseline yield is {baseline_yield} "
-            f"kg/ha, so a percentage anomaly against it would be meaningless. Check the "
-            f"soil row and the planting date.")
-    anomaly_pct = (projection_yield - baseline_yield) / baseline_yield * 100.0
+            f"region '{region_key}': the baseline median yield is {baseline_yield} kg/ha, so "
+            f"a percentage anomaly against it would be meaningless. Rebuild "
+            f"baseline_yields.csv and check the soil row.")
+    if baseline_applies:
+        anomaly_pct = round((projection_yield - baseline_yield) / baseline_yield * 100.0, 2)
+        rank = percentile_rank(distribution, projection_yield)
+        baseline_note = None
+    else:
+        anomaly_pct = None
+        rank = None
+        baseline_note = (
+            "planting_date or variety_name was overridden, so the committed baseline "
+            "distribution does not describe this configuration and no anomaly is reported.")
 
     flags_by_date = {
         row["date"]: {
@@ -577,7 +690,9 @@ def process_region(region_key, region_rows, tables, settings, document):
         # kg/ha -> bu/acre. Illustrative only: these are uncalibrated WOFOST
         # yields, not a forecast of the USDA number. See README.md.
         "yield_projection_bu_acre": round(projection_yield / KG_HA_PER_BU_ACRE, 2),
-        "yield_anomaly_pct": round(anomaly_pct, 2),
+        "yield_anomaly_pct": anomaly_pct,
+        "yield_percentile_rank": rank,
+        "baseline_note": baseline_note,
         "heat_stress_days_in_silking_window": heat_days,
         "frost_days_in_sensitive_window": frost_days,
         "water_stress_indicator": mean_water_stress(projection_daily),
@@ -591,7 +706,8 @@ def process_region(region_key, region_rows, tables, settings, document):
 
 # --- output ------------------------------------------------------------------
 
-def build_metadata(document, settings, climatology_meta, soils, planting, region_keys):
+def build_metadata(document, settings, climatology_meta, baselines_meta,
+                   soils, planting, region_keys):
     node1_metadata = document.get("metadata") or {}
     return {
         "date": settings["as_of"],
@@ -600,17 +716,23 @@ def build_metadata(document, settings, climatology_meta, soils, planting, region
         "wofost_engine": "Wofost72_WLP_FD (water-limited, free-draining)",
         "crop": CROP_NAME,
         "crop_parameters": (
-            "pcse.input.YAMLCropDataProvider, which ships inside the pcse package; "
-            "upstream source github.com/ajwdewit/WOFOST_crop_parameters. Uncalibrated for "
-            "US conditions: absolute yields are illustrative, the anomaly is the signal."),
+            "pcse.input.YAMLCropDataProvider reading github.com/ajwdewit/WOFOST_crop_parameters, "
+            "baked into the image at a pinned commit rather than downloaded at run time. "
+            "Uncalibrated for US conditions: absolute yields are illustrative, the anomaly "
+            "is the signal."),
         "yield_anomaly_definition": (
-            "(projection - baseline) / baseline x 100, where both are Wofost72_WLP_FD runs "
-            "differing only in the driving weather: the projection uses observed + forecast "
-            "+ climatology normals, the baseline uses normals for the whole season. Using "
-            "the same uncalibrated parameters in both cancels most of the calibration error."),
+            "(projection - baseline) / baseline x 100, where the projection is this season's "
+            "Wofost72_WLP_FD run and the baseline is the median of the same run repeated over "
+            f"each year of {baselines_meta.get('period')} on that year's real daily weather, "
+            "with identical soil, planting date, variety and engine. Using the same "
+            "uncalibrated parameters throughout cancels most of the calibration error. "
+            "yield_percentile_rank gives the projection's place in that distribution, which "
+            "is the more robust statistic where the distribution is skewed."),
         "season_completion": (
             "observed (planting -> last observed day) + node 1 forecast + climatology "
-            "normals to maturity. forecast_fraction reports the share that was not observed."),
+            "normals to maturity. forecast_fraction reports the share that was not observed. "
+            "Normals complete only the tail of a season whose soil profile is already charged "
+            "by real weather; they are deliberately not used to drive a whole season."),
         "kg_ha_to_bu_acre_divisor": round(KG_HA_PER_BU_ACRE, 4),
         "silking_window_dvs": list(settings["silking_window"]),
         "frost_windows_dvs": [list(window) for window in settings["frost_windows"]],
@@ -623,6 +745,7 @@ def build_metadata(document, settings, climatology_meta, soils, planting, region
             "Deterministic and offline: a pure function of the input document and the "
             "committed tables. No network calls, no randomness, no wall-clock dependence."),
         "climatology": climatology_meta,
+        "baselines": baselines_meta,
         "soils": {
             key: {
                 "texture_class": soils[key]["texture_class"],
@@ -678,6 +801,8 @@ def main():
     planting = read_csv_keyed(PLANTING_PATH)
     normals = load_climatology()
     climatology_meta = load_climatology_meta()
+    baselines = load_baselines()
+    baselines_meta = load_baselines_meta()
 
     node1_metadata = document.get("metadata") or {}
     # Node 1's `date` is the last observed day, which is the snapshot's "as of".
@@ -714,17 +839,19 @@ def main():
     for region_key in region_keys:
         snapshot, rows = process_region(
             region_key, grouped[region_key],
-            {"soils": soils, "planting": planting, "normals": normals},
+            {"soils": soils, "planting": planting, "normals": normals,
+             "baselines": baselines, "baselines_meta": baselines_meta},
             settings, document)
         snapshots.append(snapshot)
         trajectories[region_key] = rows
         log(f"  {region_key}: {snapshot['stage_name']} (DVS "
             f"{snapshot['dvs']}), yield {snapshot['yield_projection_kg_ha']} vs baseline "
             f"{snapshot['yield_baseline_kg_ha']} kg/ha, anomaly "
-            f"{snapshot['yield_anomaly_pct']}%")
+            f"{snapshot['yield_anomaly_pct']}% (percentile "
+            f"{snapshot['yield_percentile_rank']})")
 
     metadata = build_metadata(
-        document, settings, climatology_meta, soils, planting, region_keys)
+        document, settings, climatology_meta, baselines_meta, soils, planting, region_keys)
 
     trajectory_document = {
         "generated_at": metadata["generated_at"],
