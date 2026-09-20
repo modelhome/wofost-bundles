@@ -68,14 +68,14 @@ Flow steps bind by required-key set, so this model's input declares
 `regions`).
 
 Optional fields, all with working defaults: `date` (the day to report as of,
-defaulting to the upstream run's own date), `planting_date`, `variety_name`,
-`max_duration`, `silking_window` and `frost_windows`. See `Modelfile.toml` for
-each one.
+defaulting to the upstream run's own date), `max_duration`, `silking_window` and
+`frost_windows`. See `Modelfile.toml` for each one.
 
-> Overriding `planting_date` or `variety_name` means the committed thirty-year
-> baseline no longer describes the configuration being run, so the anomaly and
-> percentile are reported empty and `baseline_note` says why. The projection and
-> the phenology are still produced.
+> **The planting date and variety are deliberately not overridable.** The
+> committed thirty-year baseline was built for those exact values, so letting a
+> caller change one would silently invalidate the distribution the anomaly is
+> measured against. To model a different planting date, change
+> `planting_dates.csv` and rebuild the baseline with `build_baselines.py`.
 
 ## Outputs
 
@@ -267,6 +267,23 @@ coefficients, estimated once from the 30-year radiation series and used for
 **both** the baseline and the projection, so the two runs differ in nothing but
 weather.
 
+It also records `crop_parameters_sha`, the exact commit of
+`WOFOST_crop_parameters` the baseline was built against. `build_baselines.py`
+therefore takes a local checkout rather than letting PCSE download whatever the
+upstream branch currently is, and **the runner refuses to start** if the image
+was built from a different commit:
+
+```
+error: crop parameters in this image are commit 99ff94477e10, but
+baseline_yields.csv was built with f0a6491f2368. ...
+```
+
+Without that check the anomaly could silently compare two different crop models
+while the metadata claimed identical parameters, which is a wrong answer rather
+than a failure. Each run reports `crop_parameters_sha` and
+`crop_parameters_pin_verified` in its metadata; outside the image the commit is
+unknowable and `crop_parameters_pin_verified` is `false` rather than assumed.
+
 > **On the baseline period.** 1995-2024 is deliberately *not* the WMO-standard
 > 1991-2020. This table is not a published climate normal; it is the reference
 > weather for an internal baseline run, and what it should represent is the
@@ -307,6 +324,19 @@ observed -- those values can be revised by a later ERA5 pass -- and uses fixed
 normals beyond them. `forecast_fraction` reports how much of the simulated
 season that was. The whole projection is recomputed on every run, so it always
 reflects current data and current code.
+
+## A note on the declared schema
+
+The platform's Modelfile format types every property with a single string, so
+there is no way to declare "a number, or empty". Two consequences:
+
+- Every field the output schema lists as **required** is genuinely always
+  present and non-null. That is enforced by `check_yield.py`, and it is why the
+  planting-date and variety overrides were removed: they were the only thing
+  that could have left `yield_anomaly_pct` empty.
+- Fields that *can* be empty -- `dvs` before the crop emerges, and the trajectory's
+  `frost_day` / `heat_stress_day` on days filled in with normals -- are
+  deliberately **not** in any `required` list, and say so in their descriptions.
 
 ## Limitations
 

@@ -594,3 +594,39 @@ rank. The consequences, all recorded in the brief and the bundle README:
 - **Overriding `planting_date` or `variety_name` suppresses the anomaly**, since
   the committed baseline no longer describes the configuration being run. The
   projection and phenology are still produced and `baseline_note` says why.
+
+### C6. Copilot review findings, all addressed
+
+Four findings on PR #1, all legitimate; each is covered by a new check.
+
+1. **The baseline used unpinned crop parameters while the image pinned them.**
+   `build_baselines.py` called `YAMLCropDataProvider()` with no path, which
+   downloads whatever the upstream `wofost72` branch is at that moment, while
+   the image was pinned to `f0a6491`. Had those diverged, the anomaly would have
+   compared two different crop models while the metadata claimed identical
+   parameters -- a silent wrong answer. The build now takes an explicit checkout
+   path, records `crop_parameters_sha` in `baselines.meta.json`, and the runner
+   **refuses to start** on a mismatch. Verified by building an image at an older
+   commit and confirming it exits 1 with an actionable message. Rebuilding from
+   the pinned checkout left every committed yield byte-identical, so no number
+   changed.
+2. **Required output fields could be null.** `yield_anomaly_pct` and
+   `yield_percentile_rank` were declared required but went null when the
+   planting-date or variety override was used, and the platform's schema format
+   has no nullable type. Fixed at the root by **removing those two overrides**:
+   they were an addition of D9's, not of the brief, and they silently degraded
+   the model's headline output. `baseline_note` is gone with them. `dvs` is
+   removed from the trajectory's `required` list, since it is genuinely absent
+   before emergence. `check_yield.py` now asserts every declared-required field
+   is non-null on every row.
+3. **A gap in node 1's series was silently filled with normals.** `build_series`
+   fell back to normals for any missing date, so a hole in the middle of the
+   observed period was relabelled as a normals day -- changing the yield and
+   understating `forecast_fraction` while hiding upstream data loss. D3 had
+   required a loud failure and the code did not do it. Now a missing day inside
+   node 1's own covered range raises `RunError`; days past its end still get
+   normals, which is the intended behaviour.
+4. **A stale annotation** still said the crop parameters ship inside the pcse
+   package, contradicting the Dockerfile two files away. Corrected.
+
+Checks went from 54 to **82**.

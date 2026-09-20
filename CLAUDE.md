@@ -141,6 +141,16 @@ essentials this repo depends on:
   `Maize_VanHeemst_1988`; the `20x` series is a maturity-class ladder
   (TSUM1/TSUM2 = 695/800, 695/860, 775/880, 855/900, 935/920), which is how a
   north-to-south US relative-maturity gradient is expressed.
+- **Pin the crop parameters, and check the pin.** Anything precomputed against
+  those parameters (a baseline distribution, a calibration) must record the
+  exact commit it used, and the runner must refuse to run against a different
+  one. Otherwise a parameter change silently makes a precomputed comparison
+  wrong while the metadata still claims the two match -- a wrong answer, which
+  is worse than a failed run.
+- **The Modelfile schema format has no nullable type.** `schema_type` requires a
+  plain string, so `["number", "null"]` is not expressible. A field that can be
+  empty therefore must not appear in any `required` list -- and if a required
+  field can go null, fix the model rather than the declaration.
 - **PCSE writes to stdout on first import.** Into a fresh home directory it
   prints `Building PCSE demo database at: ... OK`. Every runner here redirects
   stdout to stderr around the PCSE import, because the platform parses stdout
@@ -308,6 +318,10 @@ corn-yield/
   il 7,631, in 7,567, mo 6,252, ne 3,936, sd 3,098, ks 1,491. The low western
   numbers are dryland simulations of states whose corn is substantially
   irrigated -- a documented limitation, not a bug.
+- **Copilot review (PR #1):** four findings, all addressed -- an unpinned
+  crop-parameter baseline, required-but-nullable output fields, silent gap
+  filling, and a stale annotation. Checks went 54 -> **82/82**. Rebuilding the
+  baseline against the pinned checkout changed no committed number.
 - **Not yet verified:** the Model Home import (AC-10), which needs a signed-in
   human at the Auth0 login.
 

@@ -26,6 +26,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && git clone --no-checkout https://github.com/ajwdewit/WOFOST_crop_parameters.git /crop_parameters \
     && git -C /crop_parameters checkout "${WOFOST_CROP_PARAMETERS_SHA}" \
+    && git -C /crop_parameters rev-parse HEAD > /crop_parameters/COMMIT_SHA \
     && rm -rf /crop_parameters/.git
 
 # --- the model ---------------------------------------------------------------

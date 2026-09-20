@@ -30,17 +30,31 @@ is only clean if the projection and the baseline differ in nothing but weather.
 A single estimate from 30 years is both more stable than one from a partial
 season and shared by both runs, so it is committed here and used for both.
 
+For the same reason this build takes the crop parameters from an explicit local
+checkout rather than letting PCSE download them. `YAMLCropDataProvider()` with
+no path fetches whatever the upstream `wofost72` branch happens to be at the
+time, so a baseline built that way would drift out of step with the pinned
+checkout baked into the image, and the anomaly would silently compare two
+different crop models. The checkout's commit is recorded in baselines.meta.json
+and the runner refuses to run against a different one.
+
 The model never runs this. It reads the committed baseline_yields.csv.
 
 Run from the repo root, after build_climatology.py has populated the cache:
 
+    git clone --no-checkout https://github.com/ajwdewit/WOFOST_crop_parameters.git \\
+        corn-yield/.crop-parameters-cache
+    git -C corn-yield/.crop-parameters-cache checkout <the Dockerfile's SHA>
+
     uv run --no-project --python 3.12 --with pcse==6.0.13 \\
-        python corn-yield/build_baselines.py ../agromet-bundles/crop-weather/regions.csv
+        python corn-yield/build_baselines.py ../agromet-bundles/crop-weather/regions.csv \\
+            corn-yield/.crop-parameters-cache
 """
 import csv
 import json
 import math
 import statistics
+import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -179,18 +193,42 @@ def run_year(observed, site, soil_row, planting_row, year, angstrom_a, angstrom_
     return summary[0].get("TWSO")
 
 
+def crop_parameters_commit(path):
+    """The exact commit of the crop-parameter checkout this build used."""
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise clim.BuildError(
+            f"{path} is not a git checkout, so the crop-parameter commit cannot be "
+            f"recorded: {exc}. The baseline must be pinned to the same commit the "
+            f"image bakes in, or the anomaly compares two different crop models.") from exc
+    if not sha:
+        raise clim.BuildError(f"{path}: empty commit id")
+    return sha
+
+
 def main():
-    if len(sys.argv) != 2:
+    if len(sys.argv) != 3:
         raise SystemExit(
-            "usage: build_baselines.py <path to crop-weather/regions.csv>\n"
-            "Node 1 owns the region points; this script never invents them.")
+            "usage: build_baselines.py <path to crop-weather/regions.csv> "
+            "<path to a WOFOST_crop_parameters checkout>\n"
+            "Node 1 owns the region points; this script never invents them.\n"
+            "The crop parameters must come from the same pinned commit the Dockerfile "
+            "bakes into the image, not from PCSE's own download.")
     regions = clim.read_regions(sys.argv[1])
+    crop_parameters_path = Path(sys.argv[2]).resolve()
+    if not crop_parameters_path.is_dir():
+        raise clim.BuildError(f"crop-parameter checkout not found: {crop_parameters_path}")
+    crop_sha = crop_parameters_commit(crop_parameters_path)
+    clim.log(f"crop parameters: {crop_parameters_path} at {crop_sha}")
     soils = {row["region_key"]: row for row in
              csv.DictReader(open(HERE / "soils.csv", newline="", encoding="utf-8"))}
     planting = {row["region_key"]: row for row in
                 csv.DictReader(open(HERE / "planting_dates.csv", newline="", encoding="utf-8"))}
 
-    crop_data = YAMLCropDataProvider()
+    crop_data = YAMLCropDataProvider(fpath=str(crop_parameters_path))
     rows = []
     summary_by_region = {}
     for region in regions:
@@ -244,6 +282,10 @@ def main():
     META_PATH.write_text(json.dumps({
         "period": clim.PERIOD,
         "engine": ENGINE,
+        "crop_parameters_repository": "github.com/ajwdewit/WOFOST_crop_parameters",
+        # The runner refuses to run against a different commit: the projection and
+        # the baseline must use the same crop model, not just the same weather.
+        "crop_parameters_sha": crop_sha,
         "crop": CROP_NAME,
         "max_duration_days": MAX_DURATION,
         "source": clim.SOURCE,

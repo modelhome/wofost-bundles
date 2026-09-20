@@ -8,12 +8,17 @@ image = "modelhome/wofost-corn-yield:latest"
 args = ["{input:crop_weather_daily}", "{output:corn_yield_trajectory}"]
 
 # Semantic annotations. Determinism: unlike the upstream weather model, this one
-# makes no network calls at all. Given the same input document it is exactly
-# reproducible -- the crop parameters ship inside the pcse package and the soil,
-# planting, climatology and baseline tables are committed beside the runner. It
-# inherits the upstream model's forecast caveat for the days that were forecast
-# rather than observed; forecast_fraction reports how much of the simulated
-# season that was.
+# makes no network calls at run time. Given the same input document it is
+# exactly reproducible -- the soil, planting, climatology and baseline tables
+# are committed beside the runner, and the WOFOST crop parameters are baked into
+# the image at a pinned commit of ajwdewit/WOFOST_crop_parameters. PCSE does NOT
+# carry them: left to itself it downloads them and caches them for seven days,
+# which would make the model neither offline nor stable. The runner refuses to
+# start if the image's commit is not the one baseline_yields.csv was built
+# against, since the anomaly compares the two and they must be the same crop
+# model. The model inherits the upstream model's forecast caveat for the days
+# that were forecast rather than observed; forecast_fraction reports how much of
+# the simulated season that was.
 determinism = "deterministic"
 expected_runtime = "seconds"
 validity_domain = "US corn regions, in season. One WOFOST run per region on the upstream weather, with one representative point, soil and planting date per state, so values describe a state's corn area, not one field. Rainfed (water-limited) throughout: in states where much of the corn is irrigated, mainly Kansas and Nebraska, the weather response is overstated. Absolute yields are uncalibrated and illustrative; the anomaly and percentile are the usable signal. Stress-day counts cover observed and forecast days only. See the README."
@@ -140,15 +145,6 @@ type = "string"
 format = "date"
 description = "The day to report as of, as YYYY-MM-DD. Leave it out to use the upstream run's own date, which is what a flow should do."
 
-[inputs.schema.properties.planting_date]
-type = "string"
-format = "date"
-description = "Plant every region on this day instead of its usual local date, as YYYY-MM-DD. For testing an early or late planting. Because the thirty-year comparison was worked out for the usual dates, using this field means no anomaly is reported."
-
-[inputs.schema.properties.variety_name]
-type = "string"
-description = "Use one maize maturity class for every region instead of the usual local one, e.g. Grain_maize_203. As with planting_date, using this field means no anomaly is reported."
-
 [inputs.schema.properties.max_duration]
 type = "integer"
 unit = "d"
@@ -215,7 +211,7 @@ description = "The day this snapshot describes."
 
 [outputs.schema.properties.rows.items.properties.dvs]
 type = "number"
-description = "How far the crop has developed, from 0 when it comes up, through 1 when it flowers, to 2 when it is ripe. Empty before planting."
+description = "How far the crop has developed, from 0 when it comes up, through 1 when it flowers, to 2 when it is ripe. Empty before the crop emerges; the schema format cannot express that, so treat it as optional."
 
 [outputs.schema.properties.rows.items.properties.stage_name]
 type = "string"
@@ -259,16 +255,12 @@ description = "The projected yield in bushels per acre, for readability only. Th
 [outputs.schema.properties.rows.items.properties.yield_anomaly_pct]
 type = "number"
 unit = "%"
-description = "How far above or below a normal year this season's yield is. This is the number downstream price models use, because it cancels out the model's uncalibrated absolute level. Empty if the planting date or variety was overridden."
+description = "How far above or below a normal year this season's yield is. This is the number downstream price models use, because it cancels out the model's uncalibrated absolute level. Always present."
 
 [outputs.schema.properties.rows.items.properties.yield_percentile_rank]
 type = "number"
 unit = "%"
-description = "Where this season sits among the last thirty: 70 means it beats seven of every ten. More reliable than the percentage when the good and bad years are far apart. Empty if the planting date or variety was overridden."
-
-[outputs.schema.properties.rows.items.properties.baseline_note]
-type = "string"
-description = "Why the comparison figures are empty, when they are. Empty in a normal run."
+description = "Where this season sits among the last thirty: 70 means it beats seven of every ten. More reliable than the percentage when the good and bad years are far apart. Always present."
 
 [outputs.schema.properties.rows.items.properties.heat_stress_days_in_silking_window]
 type = "integer"
@@ -348,7 +340,10 @@ description = "One entry per simulated day, oldest first."
 
 [outputs.schema.properties.regions.items.properties.days.items]
 type = "object"
-required = ["date", "dvs", "source"]
+# dvs is deliberately not required: it is empty before the crop emerges, and the
+# platform's schema format has no way to say "number or empty", so declaring it
+# required would be a promise the runner cannot keep.
+required = ["date", "source"]
 description = "One day: the crop's development, where that day's weather came from, and whether it was a frost or heat-stress day."
 
 [outputs.schema.properties.regions.items.properties.days.items.properties.date]
@@ -358,7 +353,7 @@ description = "The calendar day."
 
 [outputs.schema.properties.regions.items.properties.days.items.properties.dvs]
 type = "number"
-description = "How far the crop had developed that day, 0 at emergence to 2 at ripeness. Empty before it came up."
+description = "How far the crop had developed that day, 0 at emergence to 2 at ripeness. Empty before it came up; the schema format cannot express that, so treat it as optional."
 
 [outputs.schema.properties.regions.items.properties.days.items.properties.source]
 type = "string"

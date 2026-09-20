@@ -31,9 +31,11 @@ run/
 .vscode/
 *.swp
 
-# Climatology build download cache (corn-yield/build_climatology.py). The
-# committed artifact is climatology.csv, not the raw archive responses.
+# Build download caches. The committed artifacts are climatology.csv and
+# baseline_yields.csv, not the raw archive responses or the crop-parameter
+# checkout build_baselines.py reads.
 .climatology-cache/
+.crop-parameters-cache/
 
 # Credentials. No bundle here needs a key today -- Open-Meteo's archive is
 # keyless and PCSE's crop parameters ship inside the pip package -- but these

@@ -122,7 +122,7 @@ SNAPSHOT_COLUMNS = [
     "dvs", "stage_name", "days_to_anthesis", "days_to_maturity",
     "date_anthesis", "date_maturity",
     "yield_projection_kg_ha", "yield_baseline_kg_ha", "yield_projection_bu_acre",
-    "yield_anomaly_pct", "yield_percentile_rank", "baseline_note",
+    "yield_anomaly_pct", "yield_percentile_rank",
     "heat_stress_days_in_silking_window", "frost_days_in_sensitive_window",
     "water_stress_indicator",
     "forecast_fraction", "planting_date", "variety_name", "observed_through",
@@ -201,6 +201,36 @@ def load_baselines_meta():
     if not BASELINES_META_PATH.exists():
         raise RunError("missing committed table: baselines.meta.json")
     return json.loads(BASELINES_META_PATH.read_text())
+
+
+def check_crop_parameters_pin(baselines_meta):
+    """
+    The projection and the baseline must use the same crop model.
+
+    The baseline distribution was computed with one exact commit of
+    WOFOST_crop_parameters, recorded in baselines.meta.json. If the image was
+    built from a different commit, the anomaly would be comparing two different
+    crop models while the metadata claimed identical parameters -- a silent
+    wrong answer, which is worse than a failed run. Returns the commit actually
+    in use, or None when running outside the image.
+    """
+    expected = baselines_meta.get("crop_parameters_sha")
+    sha_path = CROP_PARAMETERS_DIR / "COMMIT_SHA"
+    if not sha_path.exists():
+        # Off-platform: PCSE downloads the parameters and the commit is unknown,
+        # so this cannot be checked. Said plainly in the output metadata rather
+        # than claimed as verified.
+        return None
+    actual = sha_path.read_text().strip()
+    if expected and actual != expected:
+        raise RunError(
+            f"crop parameters in this image are commit {actual[:12]}, but "
+            f"baseline_yields.csv was built with {expected[:12]}. The yield anomaly "
+            f"compares the projection with that baseline, so they must use the same "
+            f"crop model. Rebuild the baseline with build_baselines.py against this "
+            f"checkout, or build the image with "
+            f"--build-arg WOFOST_CROP_PARAMETERS_SHA={expected}.")
+    return actual
 
 
 def median(sorted_values):
@@ -333,6 +363,16 @@ def build_series(region_rows, normals, region_key, first_day, last_day, use_norm
     by calendar date, never by position.
     """
     by_date = {} if use_normals_only else {row["date"]: row for row in region_rows}
+
+    # Normals are for the tail of the season, past where node 1 reaches. A day
+    # missing from the middle of node 1's own range is upstream data loss, not a
+    # future day: filling it silently would change the yield and understate
+    # forecast_fraction while hiding the loss. Fail on it instead.
+    covered_from = covered_to = None
+    if by_date:
+        covered_from = date.fromisoformat(min(by_date))
+        covered_to = date.fromisoformat(max(by_date))
+
     series = []
     day = first_day
     while day <= last_day:
@@ -342,6 +382,13 @@ def build_series(region_rows, normals, region_key, first_day, last_day, use_norm
             values = {name: float(row[name]) for name in PCSE_COLUMNS}
             source = "forecast" if row["is_forecast"] else "observed"
         else:
+            if covered_from is not None and covered_from <= day <= covered_to:
+                raise RunError(
+                    f"region '{region_key}': the weather series has no row for {iso}, "
+                    f"which falls inside the range it does cover "
+                    f"({covered_from} to {covered_to}). That is a gap in the upstream "
+                    f"data, not a day still in the future; this model will not fill it "
+                    f"with normals and pass it off as a forecast.")
             values = dict(normals_for(normals, region_key, day))
             source = "normals"
         series.append({"day": day, "source": source, **values})
@@ -457,6 +504,7 @@ def crop_data_provider(variety_name, region_key):
         if CROP_PARAMETERS_DIR.is_dir():
             _CROP_DATA = YAMLCropDataProvider(fpath=str(CROP_PARAMETERS_DIR))
         else:
+            # Dev fallback only; see check_crop_parameters_pin().
             try:
                 _CROP_DATA = YAMLCropDataProvider()
             except Exception as exc:
@@ -603,9 +651,12 @@ def process_region(region_key, region_rows, tables, settings, document):
     as_of = date.fromisoformat(settings["as_of"])
 
     year = date.fromisoformat(region_rows[0]["date"]).year
-    planting_day = settings["planting_date"] or date(
+    # The planting date and variety are not overridable: the committed baseline
+    # distribution was built for these exact values, and letting a caller change
+    # one would silently invalidate the anomaly it is compared against.
+    planting_day = date(
         year, int(planting_row["planting_month"]), int(planting_row["planting_day"]))
-    variety_name = settings["variety_name"] or planting_row["variety_name"]
+    variety_name = planting_row["variety_name"]
     max_duration = settings["max_duration"]
     last_day = planting_day + timedelta(days=max_duration)
 
@@ -631,11 +682,6 @@ def process_region(region_key, region_rows, tables, settings, document):
     if projection_yield is None:
         raise RunError(f"region '{region_key}': WOFOST reported no grain yield")
 
-    # The committed baseline was built for the committed planting date and
-    # variety. Overriding either makes it the wrong comparison, so report the
-    # projection but withhold the anomaly rather than publishing a mismatch.
-    baseline_applies = (
-        settings["planting_date"] is None and settings["variety_name"] is None)
     distribution = tables["baselines"][region_key]
     baseline_yield = median(distribution)
     if baseline_yield <= 0:
@@ -643,16 +689,8 @@ def process_region(region_key, region_rows, tables, settings, document):
             f"region '{region_key}': the baseline median yield is {baseline_yield} kg/ha, so "
             f"a percentage anomaly against it would be meaningless. Rebuild "
             f"baseline_yields.csv and check the soil row.")
-    if baseline_applies:
-        anomaly_pct = round((projection_yield - baseline_yield) / baseline_yield * 100.0, 2)
-        rank = percentile_rank(distribution, projection_yield)
-        baseline_note = None
-    else:
-        anomaly_pct = None
-        rank = None
-        baseline_note = (
-            "planting_date or variety_name was overridden, so the committed baseline "
-            "distribution does not describe this configuration and no anomaly is reported.")
+    anomaly_pct = round((projection_yield - baseline_yield) / baseline_yield * 100.0, 2)
+    rank = percentile_rank(distribution, projection_yield)
 
     flags_by_date = {
         row["date"]: {
@@ -692,7 +730,6 @@ def process_region(region_key, region_rows, tables, settings, document):
         "yield_projection_bu_acre": round(projection_yield / KG_HA_PER_BU_ACRE, 2),
         "yield_anomaly_pct": anomaly_pct,
         "yield_percentile_rank": rank,
-        "baseline_note": baseline_note,
         "heat_stress_days_in_silking_window": heat_days,
         "frost_days_in_sensitive_window": frost_days,
         "water_stress_indicator": mean_water_stress(projection_daily),
@@ -707,7 +744,7 @@ def process_region(region_key, region_rows, tables, settings, document):
 # --- output ------------------------------------------------------------------
 
 def build_metadata(document, settings, climatology_meta, baselines_meta,
-                   soils, planting, region_keys):
+                   soils, planting, region_keys, crop_parameters_sha):
     node1_metadata = document.get("metadata") or {}
     return {
         "date": settings["as_of"],
@@ -720,6 +757,11 @@ def build_metadata(document, settings, climatology_meta, baselines_meta,
             "baked into the image at a pinned commit rather than downloaded at run time. "
             "Uncalibrated for US conditions: absolute yields are illustrative, the anomaly "
             "is the signal."),
+        # Stated rather than assumed: the projection and the baseline must use the
+        # same crop model, and outside the image the commit cannot be determined.
+        "crop_parameters_sha": crop_parameters_sha,
+        "crop_parameters_pin_verified": crop_parameters_sha is not None and
+        crop_parameters_sha == baselines_meta.get("crop_parameters_sha"),
         "yield_anomaly_definition": (
             "(projection - baseline) / baseline x 100, where the projection is this season's "
             "Wofost72_WLP_FD run and the baseline is the median of the same run repeated over "
@@ -803,6 +845,7 @@ def main():
     climatology_meta = load_climatology_meta()
     baselines = load_baselines()
     baselines_meta = load_baselines_meta()
+    crop_parameters_sha = check_crop_parameters_pin(baselines_meta)
 
     node1_metadata = document.get("metadata") or {}
     # Node 1's `date` is the last observed day, which is the snapshot's "as of".
@@ -815,12 +858,8 @@ def main():
             raise RunError("input has no observed days and no metadata.date to report as of")
         default_as_of = max(observed)
 
-    planting_override = document.get("planting_date")
     settings = {
         "as_of": coerce_optional(document, "date", str, default_as_of),
-        "planting_date": (date.fromisoformat(planting_override)
-                          if planting_override else None),
-        "variety_name": coerce_optional(document, "variety_name", str, None),
         "max_duration": coerce_optional(document, "max_duration", int, DEFAULT_MAX_DURATION),
         "silking_window": parse_window(
             document.get("silking_window") or list(DEFAULT_SILKING_WINDOW), "silking_window"),
@@ -851,7 +890,8 @@ def main():
             f"{snapshot['yield_percentile_rank']})")
 
     metadata = build_metadata(
-        document, settings, climatology_meta, baselines_meta, soils, planting, region_keys)
+        document, settings, climatology_meta, baselines_meta, soils, planting,
+        region_keys, crop_parameters_sha)
 
     trajectory_document = {
         "generated_at": metadata["generated_at"],

@@ -13,6 +13,9 @@ The bundle's claims are modelling claims, so the checks are too:
 - the stage-specific stress windows intersect the flags exactly as a hand-worked
   case says they should (AC-7);
 - an unknown region_key fails loudly rather than being dropped (AC-8);
+- a gap in the upstream series fails rather than being filled with normals;
+- every output field the Modelfile declares required is actually never null;
+- the baseline and the runtime use the same pinned crop parameters;
 - no yield figure carries an undocumented overlay (AC-7).
 
 Run from the repo root, after a model run:
@@ -303,6 +306,77 @@ def check_no_overlay(output):
 
 # --- AC-8: an unknown region fails loudly ------------------------------------
 
+def check_gap_fails(sample_path):
+    """
+    A hole in the upstream series must fail, not be papered over with normals.
+
+    Normals legitimately complete the tail of a season. The same fallback
+    applied to a missing day in the middle of node 1's own range would change
+    the yield and understate forecast_fraction while hiding upstream data loss.
+    """
+    print("a gap in the upstream series fails loudly")
+    document = json.loads(Path(sample_path).read_text())
+    gapped = json.loads(json.dumps(document))
+    # Drop a single midsummer day for one region only.
+    missing = "2026-07-15"
+    before = len(gapped["rows"])
+    gapped["rows"] = [r for r in gapped["rows"]
+                      if not (r["region_key"] == "ia" and r["date"] == missing)]
+    check("exactly one row was removed", before - len(gapped["rows"]) == 1,
+          str(before - len(gapped["rows"])))
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        path = tmp / "gapped.json"
+        path.write_text(json.dumps(gapped))
+        result = run_model(path, tmp / "trajectory.json")
+    check("the run exits non-zero", result.returncode != 0, str(result.returncode))
+    check("the message names the missing day", missing in result.stderr, result.stderr[-250:])
+    check("the message says it will not fill it with normals",
+          "normals" in result.stderr, result.stderr[-250:])
+    check("it is a readable error, not a traceback",
+          "Traceback" not in result.stderr, result.stderr[-250:])
+
+
+def check_schema_honesty(output):
+    """
+    Every field the Modelfile declares required must actually be non-null.
+
+    The platform's schema format has no nullable type, so a required field that
+    the runner can leave empty is a promise the model cannot keep. This is why
+    the planting-date and variety overrides were removed.
+    """
+    print("declared-required output fields are never null")
+    import tomllib
+    definition = tomllib.loads((HERE / "Modelfile.toml").read_text())
+    snapshot = next(o for o in definition["outputs"] if o["name"] == "corn_yield_snapshot")
+    required = snapshot["schema"]["properties"]["rows"]["items"]["required"]
+    for row in output["rows"]:
+        for name in required:
+            check(f"{row['region_key']}: required field '{name}' is present and not null",
+                  row.get(name) is not None, repr(row.get(name)))
+    check("no override input can suppress the anomaly",
+          "planting_date" not in definition["inputs"][0]["schema"].get("properties", {}))
+
+
+def check_crop_parameter_pin(output):
+    print("the baseline and the runtime use the same crop parameters")
+    meta = output["metadata"]
+    baseline_sha = meta["baselines"].get("crop_parameters_sha")
+    check("the baseline records the crop-parameter commit it was built with",
+          bool(baseline_sha), str(baseline_sha))
+    runtime_sha = meta.get("crop_parameters_sha")
+    if runtime_sha is None:
+        print("        running outside the image: the runtime commit is unknowable, "
+              "and the metadata says so rather than claiming a match")
+        check("the metadata does not claim a verified pin",
+              meta.get("crop_parameters_pin_verified") is False)
+    else:
+        check("the runtime commit matches the baseline's",
+              runtime_sha == baseline_sha, f"{runtime_sha} vs {baseline_sha}")
+        check("the metadata records the pin as verified",
+              meta.get("crop_parameters_pin_verified") is True)
+
+
 def check_unknown_region_fails(sample_path):
     print("an unknown region fails loudly (AC-8)")
     document = json.loads(Path(sample_path).read_text())
@@ -393,9 +467,12 @@ def main():
     check_percentile_rank()
     check_stress_windows()
     check_no_overlay(output)
+    check_schema_honesty(output)
+    check_crop_parameter_pin(output)
     check_water_limitation(sample_path)
     check_anomaly_responds(sample_path, output)
     check_unknown_region_fails(sample_path)
+    check_gap_fails(sample_path)
 
     print(f"\n{PASS}/{PASS + FAIL} checks pass")
     raise SystemExit(1 if FAIL else 0)
