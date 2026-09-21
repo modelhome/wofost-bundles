@@ -399,17 +399,47 @@ def check_unknown_region_fails(sample_path):
 
 # --- tables ------------------------------------------------------------------
 
+NODE1_REGIONS_CSV = (
+    HERE.parent.parent / "agromet-bundles" / "crop-weather" / "regions.csv")
+
+
+def node1_region_keys(output):
+    """
+    Node 1's region set, which node 1 owns and this node only joins on.
+
+    Read from agromet-bundles/crop-weather/regions.csv when the sibling repo is
+    checked out beside this one, so the check is against the real upstream
+    contract rather than a list copied into this file that would rot the next
+    time node 1 splits a state. Falling back to the regions actually present in
+    the output keeps the check runnable in a bare checkout, and says so.
+    """
+    if NODE1_REGIONS_CSV.exists():
+        import csv as _csv
+        with NODE1_REGIONS_CSV.open(newline="", encoding="utf-8") as handle:
+            return {row["region_key"] for row in _csv.DictReader(handle)}, "regions.csv"
+    return {row["region_key"] for row in output["rows"]}, "this run's output"
+
+
 def check_tables(output):
     print("committed tables")
     soils = runner.read_csv_keyed(runner.SOILS_PATH)
     planting = runner.read_csv_keyed(runner.PLANTING_PATH)
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
     normals = runner.load_climatology()
     baselines = runner.load_baselines()
-    node1_keys = {"ia", "il", "mn", "ne", "in", "sd", "oh", "wi", "ks", "mo"}
-    for name, table in (("soils.csv", soils), ("planting_dates.csv", planting),
-                        ("climatology.csv", normals), ("baseline_yields.csv", baselines)):
-        check(f"{name} covers node 1's ten region keys",
+    node1_keys, origin = node1_region_keys(output)
+    print(f"        node 1's region set, from {origin}: {len(node1_keys)} keys")
+    tables = (("soils.csv", soils), ("planting_dates.csv", planting),
+              ("water_regime.csv", regimes), ("climatology.csv", normals),
+              ("baseline_yields.csv", baselines))
+    for name, table in tables:
+        check(f"{name} covers node 1's {len(node1_keys)} region keys",
               node1_keys <= set(table), str(sorted(node1_keys - set(table))))
+        # A leftover key is as wrong as a missing one: it means a table still
+        # carries a region node 1 has stopped emitting, such as the pre-split
+        # 'ne' and 'ks'.
+        check(f"{name} carries no region node 1 does not define",
+              set(table) <= node1_keys, str(sorted(set(table) - node1_keys)))
     for key, days in normals.items():
         check(f"climatology.csv has a full year for {key}", len(days) == 365, str(len(days)))
         break
@@ -425,6 +455,235 @@ def check_tables(output):
           output["metadata"]["baselines"]["period"])
     check("the baseline is built on real years, not the mean climatology",
           "real daily" in output["metadata"]["baselines"]["method"])
+
+
+# --- AC-2/AC-5: the water regime ---------------------------------------------
+
+UNSPLIT_REGRESSION_PATH = HERE / "unsplit_regression.json"
+
+
+def check_regime_table(output):
+    print("the water regime is declared, sourced and sane (AC-2)")
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    soils = runner.read_csv_keyed(runner.SOILS_PATH)
+
+    for key, row in sorted(regimes.items()):
+        check(f"{key}: regime is one of rainfed/irrigated",
+              row["regime"] in ("rainfed", "irrigated"), row["regime"])
+        check(f"{key}: the row carries method and source text",
+              bool(row["method"].strip()) and bool(row["source"].strip()))
+
+    irrigated = {key for key, row in regimes.items() if row["regime"] == "irrigated"}
+    # Node 1 decides which states are split, by its own 20 percent threshold.
+    # If node 1 splits another state, this check fails and the table must be
+    # extended deliberately rather than by a rule that guesses from the key.
+    check("exactly node 1's two irrigated strata are declared irrigated",
+          irrigated == {"ne_irrigated", "ks_irrigated"}, str(sorted(irrigated)))
+
+    for key in sorted(irrigated):
+        row = regimes[key]
+        soil = {name: float(soils[key][name]) for name in runner.SOIL_PARAMETERS}
+        amount_cm = float(row["irrigation_amount_cm"])
+        available_cm = (soil["SMFCF"] - soil["SMW"]) * soil["RDMSOL"]
+        # The cm/mm trap. PCSE reads irrigation_amount as cm (RIRR is cm/day),
+        # but its own docstring example reads as mm. A value entered as though
+        # it were mm -- 25.4 for one inch instead of 2.54 -- would exceed the
+        # whole profile's plant-available water in a single application and
+        # still produce plausible-looking output.
+        check(f"{key}: one application ({amount_cm} cm) is less than the profile's "
+              f"plant-available water ({available_cm:.1f} cm), so the amount is cm not mm",
+              0 < amount_cm < available_cm, f"{amount_cm} vs {available_cm:.1f}")
+        trigger = runner.irrigation_trigger_sm(soil, row, key)
+        check(f"{key}: the trigger SM {trigger:.4f} lies between SMW {soil['SMW']} "
+              f"and SMFCF {soil['SMFCF']}",
+              soil["SMW"] < trigger < soil["SMFCF"], str(trigger))
+
+    # AC-2's second sentence: the regime is a table lookup, never a guess at the
+    # spelling of a region key.
+    for name in ("runner.py", "build_baselines.py"):
+        text = (HERE / name).read_text()
+        offenders = [line.strip() for line in text.splitlines()
+                     if ("_irrigated" in line or "_rainfed" in line)
+                     and ("==" in line or "endswith" in line or "startswith" in line
+                          or "in region_key" in line)]
+        check(f"{name} never infers the regime from the region key's spelling",
+              not offenders, "; ".join(offenders[:2]))
+
+    # The agromanagement a rainfed region gets must be the campaign this bundle
+    # used before brief 0002: no events at all.
+    soil = {name: float(soils["ia"][name]) for name in runner.SOIL_PARAMETERS}
+    rainfed = runner.agromanagement_for(
+        date(2026, 5, 4), "Grain_maize_203", 200, soil, regimes["ia"], "ia")
+    campaign = list(rainfed[0].values())[0]
+    check("a rainfed region is given no irrigation events at all",
+          campaign["StateEvents"] is None and campaign["TimedEvents"] is None)
+
+    soil_ks = {name: float(soils["ks_irrigated"][name]) for name in runner.SOIL_PARAMETERS}
+    irr = runner.agromanagement_for(
+        date(2026, 4, 22), "Grain_maize_205", 200, soil_ks,
+        regimes["ks_irrigated"], "ks_irrigated")
+    events = list(irr[0].values())[0]["StateEvents"]
+    check("an irrigated region is given one SM-triggered irrigation event",
+          events is not None and len(events) == 1
+          and events[0]["event_signal"] == "irrigate"
+          and events[0]["event_state"] == "SM")
+    check("the irrigation event fires on falling soil moisture, so it does not "
+          "re-fire on the rebound it just caused",
+          events[0]["zero_condition"] == "falling", events[0]["zero_condition"])
+
+
+def check_baseline_regime_matches(output):
+    print("each baseline was built under the regime its projection uses")
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    per_region = output["metadata"]["baselines"].get("regions", {})
+    for key, row in sorted(regimes.items()):
+        recorded = per_region.get(key, {}).get("regime")
+        # If these disagree the anomaly compares two different models, which is
+        # the silent wrong answer this bundle refuses to produce.
+        check(f"{key}: baseline regime '{recorded}' matches the run's '{row['regime']}'",
+              recorded == row["regime"], f"{recorded} vs {row['regime']}")
+
+
+def check_baseline_regime_mismatch_fails():
+    print("a baseline built under the wrong regime fails before any projection runs")
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    real_meta = runner.load_baselines_meta()
+    keys = sorted(regimes)
+
+    # The real pair must pass, or the check below proves nothing.
+    try:
+        runner.check_baseline_regimes(regimes, real_meta, keys)
+        check("the committed baseline and regime table agree", True)
+    except runner.RunError as exc:
+        check("the committed baseline and regime table agree", False, str(exc)[:200])
+
+    for scenario, doctored in (
+            ("a region's baseline was built under the other regime",
+             {"regions": {k: dict(v, regime=("rainfed" if v.get("regime") == "irrigated"
+                                             else "irrigated"))
+                          for k, v in real_meta.get("regions", {}).items()}}),
+            ("the baseline predates water_regime.csv and records no regime",
+             {"regions": {k: {key: value for key, value in v.items() if key != "regime"}
+                          for k, v in real_meta.get("regions", {}).items()}})):
+        try:
+            runner.check_baseline_regimes(regimes, doctored, keys)
+        except runner.RunError as exc:
+            message = str(exc)
+            check(f"{scenario}: the run refuses", True)
+            check(f"{scenario}: the message names the two tables",
+                  "water_regime.csv" in message and "baseline_yields.csv" in message,
+                  message[:160])
+            check(f"{scenario}: the message says how to fix it",
+                  "build_baselines.py" in message, message[:160])
+        else:
+            check(f"{scenario}: the run refuses", False, "it was accepted")
+
+
+def check_irrigation_gap(output):
+    print("the irrigated stratum out-yields the rainfed one (AC-5)")
+    rows = {row["region_key"]: row for row in output["rows"]}
+    # NASS 2022 Census, operation-level: operations irrigating their entire corn
+    # crop out-yield those irrigating none by 105 percent in Kansas and 55
+    # percent in Nebraska. That is an operation-class comparison confounded with
+    # soil quality and management, while this is a two-point simulation that
+    # differs in regime and in weather -- they are not the same estimand. So the
+    # band is deliberately wide: it checks the sign and the order of magnitude,
+    # and is a sanity bound, not a calibration target. A result outside it is a
+    # finding to report, not a number to tune.
+    reference = {"ks": 105.0, "ne": 55.0}
+    for state in ("ks", "ne"):
+        irrigated = rows.get(f"{state}_irrigated")
+        rainfed = rows.get(f"{state}_rainfed")
+        if irrigated is None or rainfed is None:
+            check(f"{state}: both strata are present in the output", False,
+                  "one of the two strata is missing")
+            continue
+        wet = irrigated["yield_projection_kg_ha"]
+        dry = rainfed["yield_projection_kg_ha"]
+        gap = (wet - dry) / dry * 100.0
+        print(f"        {state}: irrigated {wet:.0f} vs rainfed {dry:.0f} kg/ha, "
+              f"gap {gap:+.1f}% (NASS operation-level reference {reference[state]:+.0f}%)")
+        check(f"{state}: the simulated irrigated-minus-rainfed gap is positive",
+              gap > 0, f"{gap:+.1f}%")
+        check(f"{state}: the gap is within the documented 25-200% sanity band",
+              25.0 <= gap <= 200.0, f"{gap:+.1f}%")
+
+
+def check_unsplit_regions_unchanged():
+    print("the eight unsplit states are unchanged by this feature (AC-3)")
+    if not UNSPLIT_REGRESSION_PATH.exists():
+        check("the pre-change regression fixture is committed", False,
+              f"missing {UNSPLIT_REGRESSION_PATH.name}")
+        return
+    fixture = json.loads(UNSPLIT_REGRESSION_PATH.read_text())
+    keys = set(fixture["rows"])
+    # The fixture stores expected figures only, not a second copy of the input.
+    # The eight unsplit states' rows in sample_input.json are byte-identical to
+    # the ones the pre-change run was given, so subsetting it here reconstructs
+    # that exact input.
+    document = json.loads((HERE / "sample_input.json").read_text())
+    subset = dict(document)
+    subset["rows"] = [row for row in document["rows"] if row["region_key"] in keys]
+    subset["metadata"] = dict(document["metadata"])
+    subset["metadata"]["regions"] = [
+        region for region in document["metadata"]["regions"]
+        if region["region_key"] in keys]
+    subset["metadata"]["angstrom"] = {
+        key: value for key, value in document["metadata"]["angstrom"].items()
+        if key in keys}
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        path = tmp / "unsplit.json"
+        path.write_text(json.dumps(subset))
+        result = run_model(path, tmp / "trajectory.json")
+    if result.returncode != 0:
+        check("the run over the eight unsplit states succeeds", False,
+              result.stderr[-300:])
+        return
+    now = {row["region_key"]: row for row in json.loads(result.stdout)["rows"]}
+    for key, expected in sorted(fixture["rows"].items()):
+        row = now.get(key)
+        if row is None:
+            check(f"{key}: still present in the output", False, "missing")
+            continue
+        differences = [name for name, value in expected.items() if row.get(name) != value]
+        check(f"{key}: every figure is identical to the pre-change run",
+              not differences,
+              "; ".join(f"{n}: {expected[n]} -> {row.get(n)}" for n in differences[:3]))
+
+
+def check_every_table_fails_loudly(sample_path):
+    print("a region missing from any one table fails loudly, naming that table (AC-7)")
+    document = json.loads(Path(sample_path).read_text())
+    victim = document["rows"][0]["region_key"]
+    region_rows = [row for row in document["rows"] if row["region_key"] == victim]
+    settings = {"as_of": document["metadata"]["date"], "max_duration": 200,
+                "silking_window": (0.9, 1.2), "frost_windows": ((0.0, 0.15), (1.7, 2.0))}
+    full = {
+        "soils": runner.read_csv_keyed(runner.SOILS_PATH),
+        "planting": runner.read_csv_keyed(runner.PLANTING_PATH),
+        "regimes": runner.read_csv_keyed(runner.WATER_REGIME_PATH),
+        "normals": runner.load_climatology(),
+        "baselines": runner.load_baselines(),
+        "baselines_meta": runner.load_baselines_meta(),
+    }
+    for table_name, name in (("soils", "soils.csv"), ("planting", "planting_dates.csv"),
+                             ("regimes", "water_regime.csv"),
+                             ("normals", "climatology.csv"),
+                             ("baselines", "baseline_yields.csv")):
+        tables = dict(full)
+        tables[table_name] = {k: v for k, v in full[table_name].items() if k != victim}
+        try:
+            runner.process_region(victim, region_rows, tables, settings, document)
+        except runner.RunError as exc:
+            message = str(exc)
+            check(f"a missing {name} row raises, and the message names {name}",
+                  name in message and victim in message, message[:160])
+        except Exception as exc:  # noqa: BLE001 - any other type is the failure
+            check(f"a missing {name} row raises a readable RunError", False,
+                  f"{type(exc).__name__}: {exc}")
+        else:
+            check(f"a missing {name} row raises", False, "the run completed")
 
 
 def check_percentile_rank():
@@ -463,6 +722,11 @@ def main():
 
     check_wofost_run(output)
     check_tables(output)
+    check_regime_table(output)
+    check_baseline_regime_matches(output)
+    check_baseline_regime_mismatch_fails()
+    check_irrigation_gap(output)
+    check_unsplit_regions_unchanged()
     check_units(output)
     check_percentile_rank()
     check_stress_windows()
@@ -472,6 +736,7 @@ def main():
     check_water_limitation(sample_path)
     check_anomaly_responds(sample_path, output)
     check_unknown_region_fails(sample_path)
+    check_every_table_fails_loudly(sample_path)
     check_gap_fails(sample_path)
 
     print(f"\n{PASS}/{PASS + FAIL} checks pass")

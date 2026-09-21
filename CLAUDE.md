@@ -233,7 +233,8 @@ restating them.
 ## The `corn-yield/` bundle
 
 **US Corn Yield (WOFOST).** Takes a `crop-weather` output and returns, per US
-corn region, the crop's development stage, a full-season projected yield, a
+corn region (twelve since brief 0002: node 1 splits NE and KS into irrigated
+and rainfed strata), the crop's development stage, a full-season projected yield, a
 weather-driven yield anomaly and percentile rank against a thirty-year
 normal-weather distribution, and heat and frost days counted inside the
 lifecycle windows where they matter. Brief:
@@ -248,14 +249,16 @@ corn-yield/
   Dockerfile              multi-stage: crop parameters pinned, then the model
   runner.py               the model
   soils.csv               per-region water-holding parameters
+  water_regime.csv        per-region water regime + irrigation parameters
   planting_dates.csv      per-region planting date and maturity class
-  climatology.csv         per-region daily normals, 1995-2024 (3,650 rows)
-  baseline_yields.csv     30 normal-weather yields per region (300 rows)
+  climatology.csv         per-region daily normals, 1995-2024 (4,380 rows)
+  baseline_yields.csv     30 normal-weather yields per region (360 rows)
   *.meta.json             provenance for the two built tables
   build_climatology.py    one-time normals build (not in the image)
   build_baselines.py      one-time baseline build (not in the image)
   check_yield.py          validation incl. real WOFOST runs (not in the image)
-  sample_input.json       a real node 1 output: Iowa and Nebraska, 2026
+  unsplit_regression.json pre-change figures for the eight unsplit states
+  sample_input.json       a real node 1 output: all twelve regions, 2026
   README.md
 ```
 
@@ -292,6 +295,26 @@ corn-yield/
   radiation series and used by both the baseline and the projection, so the two
   differ in nothing but weather. This deliberately does not use node 1's
   per-run estimate.
+- **The water regime is a declared table, not a rule on the key.** `ne_irrigated`
+  is irrigated because `water_regime.csv` says so. Nothing keys off the spelling
+  of a region key, and `check_yield.py` asserts no such inference exists, because
+  the moment node 1 splits a third state a spelling rule would silently start
+  irrigating it.
+- **Irrigation is a StateEvent, not a different engine.** Both strata run
+  `Wofost72_WLP_FD`; the irrigated one adds an SM trigger. Running the irrigated
+  strata as `Wofost72_PP` would have removed all water response, and a drought
+  would then show no signal at all in exactly the regions where irrigation
+  matters.
+- **Three PCSE traps live here**, all verified against the pinned 6.0.13 and all
+  documented in the plan: the irrigate keyword is `amount`, not the
+  `irrigation_amount` in PCSE's own docstrings (which raises `TypeError`); a
+  campaign with `StateEvents` requires a trailing empty campaign; and that
+  trailing campaign makes the engine run past maturity, so the daily output must
+  be trimmed to days the crop was in the ground. The amount is in **cm**.
+- **The baseline must be built under the regime the projection uses**, or the
+  anomaly compares two different models. `build_baselines.py` imports the
+  agromanagement builder from `runner.py` rather than keeping a second copy, and
+  `baselines.meta.json` records each region's regime so the runner can check it.
 
 ### Verified results (2026-09-19)
 
@@ -303,21 +326,31 @@ corn-yield/
 - **AC-6 demonstrated:** injecting a hot, dry fortnight over each region's own
   projected flowering date moves Iowa from +22.02% to **-34.2%** (silking heat
   days 0 -> 11) and Nebraska from +51.9% to **+7.96%** (5 -> 11).
-- Sample run (2026-09-19, Iowa and Nebraska): ia mature, anthesis 2026-07-05,
-  maturity 2026-08-24, 10,053 kg/ha (160 bu/acre), anomaly +22.02%, percentile
-  70, mean RFTRA 0.90, 0 silking heat days; ne mature, anthesis 2026-07-03,
-  maturity 2026-08-18, 5,979 kg/ha (95 bu/acre), anomaly +51.9%, percentile 80,
-  mean RFTRA 0.79, **5 silking heat days**. About 30 s for two regions.
+- Sample run (2026-09-19, all twelve regions, after brief 0002): every region
+  reaches maturity. ia +22.02% (pct 70), il +1.9% (50), in +25.97% (83.3),
+  ks_irrigated +7.78% (63.3), ks_rainfed +57.76% (60), mn -41.84% (30),
+  mo +12.53% (60), ne_irrigated +0.25% (50), ne_rainfed +40.4% (70),
+  oh -0.47% (50), sd -43.74% (26.7), wi -14.75% (40). About 1 s for twelve
+  regions.
 - **Docker build and run** produce rows, columns and trajectory **identical** to
   the local run, metadata identical apart from `generated_at`, with
   `--network none`.
 - **Modelfile validates** (`OK`, no annotation warnings), and
   `check_schema_compatibility` confirms the input binds to node 1's
   `crop_weather_daily` and is correctly refused by `crop_weather_summary`.
-- Baseline medians (kg/ha, 1995-2024): mn 10,131, wi 8,816, ia 8,238, oh 8,165,
-  il 7,631, in 7,567, mo 6,252, ne 3,936, sd 3,098, ks 1,491. The low western
-  numbers are dryland simulations of states whose corn is substantially
-  irrigated -- a documented limitation, not a bug.
+- Baseline medians (kg/ha, 1995-2024, after brief 0002): mn 10,131,
+  ne_irrigated 9,339, wi 8,816, ia 8,238, oh 8,165, il 7,631, in 7,567,
+  mo 6,252, ks_irrigated 6,164, ne_rainfed 4,236, sd 3,098, ks_rainfed 1,806.
+  The old `ne` 3,936 and `ks` 1,491 were dryland simulations of states whose
+  corn is substantially irrigated; that limitation is what brief 0002 removed.
+  Every unsplit state's 30 committed values reproduced **exactly** on the
+  rebuild, as did all 2,920 of their climatology rows.
+- **Brief 0002 (irrigation strata):** twelve regions; `ne_irrigated` and
+  `ks_irrigated` run `Wofost72_WLP_FD` with a PCSE `StateEvent` irrigating on
+  soil moisture at 50% depletion, 2.54 cm per application, 0.85 efficiency, all
+  declared in `water_regime.csv`. Simulated irrigated-minus-rainfed gap:
+  **ks +133.2%** against a NASS operation-level +105%, **ne +57.4%** against
+  +55%. Checks went 83 -> **379/379**.
 - **Copilot review (PR #1):** four findings, all addressed -- an unpinned
   crop-parameter baseline, required-but-nullable output fields, silent gap
   filling, and a stale annotation. Checks went 54 -> **82/82**. Rebuilding the
@@ -327,14 +360,18 @@ corn-yield/
 
 ### Task list
 
-1. AC-10: add the model on the local Model Home stack from the branch subfolder
-   URL and run it with node 1's output.
-2. Mark the PR ready once AC-10 passes; John merges.
-3. After merge: register on Model Home from `main` and compose it after
-   `crop-weather` in a daily flow.
-4. Follow-ups, detailed in the bundle README: soils from gNATSGO/SSURGO, an
-   irrigation share per region, a parameterised silking-heat overlay, and
-   crop-reporting-district granularity.
+1. **Node 3 is now broken by design.** `ag-commodity-bundles/corn-price` keys
+   `production_weights.csv` and `yield_history.csv` on the old ten regions and
+   raises on an unknown `region_key`. Write and run its matching brief before the
+   four-step flow is expected to work end to end.
+2. Add the model on a Model Home stack from the branch subfolder URL and run it
+   with node 1's output (needs a signed-in human at the Auth0 login).
+3. After merge: register on Model Home from `main`, then re-register node 3, and
+   compose the flow.
+4. Follow-ups, detailed in the bundle README: constraining irrigation supply
+   (aquifer decline, allocation limits, pumping capacity), soils from
+   gNATSGO/SSURGO, a parameterised silking-heat overlay, and crop-reporting-
+   district granularity.
 
 ## Task list
 

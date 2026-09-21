@@ -21,6 +21,7 @@ corn-yield/
   Dockerfile              python:3.12-slim, pinned pcse
   runner.py               the model
   soils.csv               per-region water-holding parameters
+  water_regime.csv        per-region water regime and irrigation parameters
   planting_dates.csv      per-region planting date and maturity class
   climatology.csv         per-region daily weather normals, 1995-2024
   climatology.meta.json   provenance for the above
@@ -29,9 +30,19 @@ corn-yield/
   build_climatology.py    one-time normals build (not in the image)
   build_baselines.py      one-time baseline build (not in the image)
   check_yield.py          validation, incl. real WOFOST runs (not in the image)
-  sample_input.json       a real node 1 output: Iowa and Nebraska, 2026
+  unsplit_regression.json pre-change figures for the eight unsplit states
+  sample_input.json       a real node 1 output: all twelve regions, 2026
   README.md
 ```
+
+> **Region set changed (breaking for node 3).** Node 1 now splits Nebraska and
+> Kansas into irrigated and rainfed strata, so this model emits twelve regions
+> keyed `ia, il, mn, ne_irrigated, ne_rainfed, in, sd, oh, wi, ks_irrigated,
+> ks_rainfed, mo` -- `ne` and `ks` no longer exist. `ag-commodity-bundles/corn-price`
+> still keys `production_weights.csv` and `yield_history.csv` on the old ten and
+> raises on an unknown `region_key` by design, so it must be updated before the
+> four-step flow runs end to end. Sequence: this change, then node 3's, then
+> re-register both on Model Home.
 
 ## Running it
 
@@ -103,10 +114,14 @@ on-platform.
 | Variety | per region from the `Grain_maize_201`..`_205` maturity ladder |
 | Site | `WOFOST72SiteDataProvider(WAV=...)` from `soils.csv` |
 | Soil | `soils.csv` (see below) |
-| Agromanagement | sown on the region's planting date, run to maturity, `max_duration` 200 days |
+| Agromanagement | sown on the region's planting date, run to maturity, `max_duration` 200 days; irrigated regions additionally carry a soil-moisture irrigation trigger |
+| Water regime | `water_regime.csv` (see below) -- rainfed, or irrigated |
 
 Water-limited rather than potential mode because drought is a primary driver of
-US corn yields, and it is what makes node 1's `RAIN` matter.
+US corn yields, and it is what makes node 1's `RAIN` matter. The irrigated
+strata stay on the **same** water-limited engine rather than switching to
+potential production, so they keep a live water balance and therefore a drought
+signal -- see [`water_regime.csv`](#water_regimecsv).
 
 **`E0`, `ES0` and `ET0` are this node's job.** They are in
 `WeatherDataContainer.required` and WOFOST reads them directly, but they are
@@ -214,9 +229,17 @@ added.
 
 ## The committed tables
 
-All four are keyed on node 1's `region_key`, read from
-`agromet-bundles/crop-weather/regions.csv`: `ia, il, mn, ne, in, sd, oh, wi, ks,
-mo`.
+All five are keyed on node 1's `region_key`, read from
+`agromet-bundles/crop-weather/regions.csv`: `ia, il, mn, ne_irrigated,
+ne_rainfed, in, sd, oh, wi, ks_irrigated, ks_rainfed, mo`.
+
+Node 1 splits a state into an irrigated and a rainfed stratum when irrigation
+covers at least 20 percent of its harvested corn acres, which today is Nebraska
+(52.7 percent) and Kansas (25.4 percent). The other eight states keep the single
+point they have always had, and their rows in every table are unchanged. **A
+stratum is not "the better half":** node 1 records that irrigating operations
+out-yield non-irrigating ones in Kansas and Nebraska but *under*-yield them in
+Iowa and Ohio, where irrigation sits on marginal ground.
 
 ### `soils.csv`
 
@@ -234,6 +257,94 @@ the water-limited engine degenerates into the potential one: on this sample it
 produced a 1.2% gap, and the yield anomaly stopped measuring drought at all.
 `check_yield.py` asserts the water balance is live for every region, so a
 regression to that state fails the check rather than shipping.
+
+### `water_regime.csv`
+
+Which regions are irrigated, and on what terms. One row per region, with its own
+`method` and `source` text, exactly as `soils.csv` and `planting_dates.csv`
+carry. **Nothing in the runner infers the regime from the spelling of a region
+key** -- `ne_irrigated` is irrigated because this table says so, not because of
+its name, and `check_yield.py` asserts that no such inference exists in the code.
+
+| Column | `ne_irrigated`, `ks_irrigated` | everything else |
+|---|---|---|
+| `regime` | `irrigated` | `rainfed` |
+| `trigger_depletion_fraction` | 0.50 | empty |
+| `irrigation_amount_cm` | 2.54 (gross) | empty |
+| `efficiency` | 0.85 | empty |
+
+`irrigation_amount_cm` is the **gross** application depth -- the depth the system
+applies, which is what extension application-depth guidance states. PCSE adds
+`amount x efficiency` to the soil, so 2.54 cm gross at 0.85 efficiency delivers
+**2.159 cm net** per application.
+
+A rainfed region is handed exactly the agromanagement every region in this
+bundle used before this table existed: no events at all. An irrigated region
+gets that same campaign plus one PCSE `StateEvent`:
+
+```
+event_signal: irrigate     event_state: SM     zero_condition: falling
+```
+
+which waters when the profile has dried to `trigger_depletion_fraction` of its
+plant-available water, that is at
+
+```
+SM = SMW + (1 - 0.50) x (SMFCF - SMW)
+```
+
+from that region's own `soils.csv` row. `zero_condition: falling` matters: with
+`either`, the event would fire again on the rebound it had just caused.
+
+**Why a trigger rather than potential production.** Running the irrigated strata
+as `Wofost72_PP` would have been simpler and is defensible -- fully irrigated
+corn is close to water-unlimited -- but it removes *all* water response, so a
+drought year would show no signal at all in those regions and the national
+picture would lose exactly the part of a drought that irrigation cannot cover.
+Keeping the water balance live is the whole point of this node.
+
+**The parameters are sourced, not guessed.** Management-allowed depletion of 50
+percent of plant-available water, and centre-pivot application efficiency of 85
+to 90 percent, come from University of Nebraska-Lincoln Extension NebGuide
+G1850, *Irrigation Management for Corn*; the same publication gives application
+depths of 0.75 to 1.3 inches for medium- and fine-textured soils, of which 1.0
+inch = 2.54 cm is the mid-range increment. That is an *applied* depth, so it
+maps onto PCSE's `amount` directly and the efficiency does the rest. The 0.85 efficiency is the value
+K-State Research and Extension L915 assumes for a centre pivot for general
+planning purposes.
+
+**`irrigation_amount_cm` is centimetres, and the column is named that way on
+purpose.** The `irrigate` signal takes `amount` in cm: the handler sets
+`RIRR = amount x efficiency`, and `RIRR` is documented cm/day in
+`pcse/soil/classic_waterbalance.py`, which `pcse/signals.py` repeats. PCSE's own
+agromanager docstring examples read as though the field were mm. Entered as mm,
+one inch would become 25.4 instead of 2.54 -- ten times the water, more than the
+whole profile holds.
+
+What makes that slip dangerous is that **it does not show up in the output**. On
+a free-draining water balance the excess simply drains, so a 25.4 run produced a
+yield identical to the 2.54 run to one decimal place when this was measured. No
+number anywhere looks wrong; the model is just quietly applying ten times the
+water it claims to. So `check_yield.py` asserts on the *declared value* -- that
+one application is smaller than the profile's plant-available water -- rather
+than hoping a wrong figure would surface downstream.
+
+**Two upstream traps sit in this area, and both are documentation bugs.** The
+keyword is `amount`, not the `irrigation_amount` used in every agromanager
+docstring example -- the events-table values are splatted straight into
+`WaterbalanceFD._on_IRRIGATE(self, amount, efficiency)`, so the documented name
+raises `TypeError` the first time the trigger fires. And a campaign carrying
+`StateEvents` must be followed by a trailing empty campaign, or PCSE refuses to
+infer an end date at all. Both are verified against the pinned 6.0.13, not
+recalled.
+
+**What irrigation here does not model.** Supply is unconstrained. There is no
+aquifer decline, no allocation or water-right limit, and no pumping-capacity
+ceiling when demand peaks in extreme heat -- the three things that actually bind
+on the High Plains. The drought protection simulated for `ne_irrigated` and
+`ks_irrigated` is therefore an **upper bound**, not a forecast of what a well
+can deliver in a bad year. Treat their anomalies as the optimistic end of the
+range.
 
 ### `planting_dates.csv`
 
@@ -340,15 +451,23 @@ there is no way to declare "a number, or empty". Two consequences:
 
 ## Limitations
 
-- **Rainfed everywhere.** Every region is simulated as dryland corn. Much of the
-  corn in **Kansas and Nebraska is irrigated**, so those regions' weather
-  response is overstated and their absolute yields read far below reality
-  (Kansas's baseline median is about 1,500 kg/ha, roughly 24 bu/acre, which is a
-  dryland number in a state whose actual average is several times that). The
-  anomaly is still a reasonable weather signal; the level is not. An irrigation
-  share per region is the obvious fix and is not implemented.
-- **One point per state.** These are state-scale representative points, not
-  fields. Node 1 chooses them by production weighting; a state with a real
+- **Irrigation is modelled as unlimited supply.** `ne_irrigated` and
+  `ks_irrigated` irrigate whenever soil moisture falls to their trigger, with no
+  aquifer decline, no allocation limit and no pumping-capacity ceiling in extreme
+  heat. Their drought protection is an **upper bound**: in a severe year the real
+  crop is short of water before the model's is. Constraining supply is the
+  natural next piece of work.
+- **The other ten regions are still rainfed, and two of them are drier than the
+  state they represent.** The eight unsplit states are genuinely near-dryland, so
+  this is right for them. But `ne_rainfed` and `ks_rainfed` are now the rainfed
+  *stratum* of a partly irrigated state, not the state average, and their
+  absolute yields are correspondingly low.
+- **A stratum is a point, not a share.** This model runs each stratum separately
+  and reports each separately; it does **not** weight them back into a state
+  figure. Node 1 publishes the production weight for that, and combining them is
+  the consumer's job.
+- **One point per region.** These are region-scale representative points, not
+  fields. Node 1 chooses them by production weighting; a region with a real
   north-south split is flattened into one series.
 - **Uncalibrated.** The crop parameters are the standard European WOFOST maize
   sets, not US-calibrated. Absolute yields are illustrative.
@@ -421,8 +540,8 @@ physiology, which is worse than not having one.
 ### Smaller items
 
 - Crop-reporting-district granularity instead of one point per state.
-- An irrigation share per region, to stop Kansas and Nebraska being modelled as
-  fully dryland.
+- Constraining irrigation supply: an aquifer-decline or allocation limit, and a
+  pumping-capacity ceiling, so the irrigated strata stop being an upper bound.
 - Soybean and wheat bundles, which would reuse the same machinery with a
   different crop and parameter set.
 
@@ -432,7 +551,23 @@ physiology, which is worse than not having one.
 than the plumbing: a real water-limited run reaching maturity, the water balance
 actually binding per region, the anomaly falling when a hot dry spell is
 injected into the silking window, the stress windows intersecting a hand-worked
-case exactly, and an unknown `region_key` failing loudly.
+case exactly, and an unknown `region_key` failing loudly -- in every one of the
+five committed tables, not just the first one checked.
+
+Since the strata were added it also proves that the regime is declared rather
+than inferred, that an irrigated region really does get exactly one SM-triggered
+event and a rainfed one gets none, that each region's baseline was built under
+the regime its projection uses, that a single application is smaller than the
+profile's plant-available water (the cm/mm guard), and that **the eight unsplit
+states produce figures identical to the pre-change model** -- compared against
+`unsplit_regression.json`, captured before any of this was built.
+
+**Measured, 2026-09-19, all twelve regions: 379/379 checks pass.** The simulated
+irrigated-minus-rainfed yield gap came out at **+133.2% for Kansas** against a
+NASS operation-level reference of +105%, and **+57.4% for Nebraska** against
++55%. Rebuilding the climatology and the baselines reproduced every one of the
+eight unsplit states' committed numbers exactly: 2,920 climatology rows and 240
+baseline years, zero differences.
 
 ```bash
 uv run --no-project --python 3.12 --with pcse==6.0.13 \

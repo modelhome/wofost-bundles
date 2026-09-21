@@ -6,7 +6,7 @@
   "endpoint": "https://archive-api.open-meteo.com/v1/archive",
   "method": "Per-region mean of each variable by calendar (month, day) over 1995-2024, in pcse.base.WeatherDataContainer units, using node 1's conversions (IRRAD MJ/m2/day x 1e6; RAIN mm x 0.1; VAP Magnus on the daily mean dew point; WIND 10 m -> 2 m by a 0.033 m log profile, requested in m/s). 29 February is absent and falls back to 28 February.",
   "pcse_convention": "pcse.base.WeatherDataContainer: TMIN/TMAX degC, IRRAD J/m2/day, VAP hPa, WIND m/s at 2 m, RAIN cm/day. NOT PCSE's CSV file convention.",
-  "built_at": "2026-09-19T23:47:10+00:00",
+  "built_at": "2026-09-21T21:09:22+00:00",
   "regions": [
     {
       "region_key": "ia",
@@ -30,11 +30,18 @@
       "elev_m": 327.0
     },
     {
-      "region_key": "ne",
+      "region_key": "ne_irrigated",
       "state": "NE",
-      "lat": 41.1658,
-      "lon": -98.3301,
-      "elev_m": 563.0
+      "lat": 41.1699,
+      "lon": -98.6459,
+      "elev_m": 596.0
+    },
+    {
+      "region_key": "ne_rainfed",
+      "state": "NE",
+      "lat": 41.1585,
+      "lon": -97.7774,
+      "elev_m": 530.0
     },
     {
       "region_key": "in",
@@ -65,11 +72,18 @@
       "elev_m": 265.0
     },
     {
-      "region_key": "ks",
+      "region_key": "ks_irrigated",
       "state": "KS",
-      "lat": 38.6509,
-      "lon": -98.4763,
-      "elev_m": 582.0
+      "lat": 38.1752,
+      "lon": -99.7654,
+      "elev_m": 676.0
+    },
+    {
+      "region_key": "ks_rainfed",
+      "state": "KS",
+      "lat": 38.9711,
+      "lon": -97.6086,
+      "elev_m": 410.0
     },
     {
       "region_key": "mo",
