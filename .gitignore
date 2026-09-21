@@ -36,6 +36,10 @@ run/
 # checkout build_baselines.py reads.
 .climatology-cache/
 .crop-parameters-cache/
+# The Dockerfile bakes the crop parameters into the image at /app/crop_parameters.
+# Running the model or check_yield.py locally against the same pinned commit means
+# putting a copy (or a link) here, which is a third-party checkout, not source.
+corn-yield/crop_parameters
 
 # Credentials. No bundle here needs a key today -- Open-Meteo's archive is
 # keyless and PCSE's crop parameters ship inside the pip package -- but these

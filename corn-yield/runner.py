@@ -15,7 +15,9 @@ For each region in that input it:
 2. splices the driving weather as observed + forecast + climatology normals, so
    a full season can be simulated mid-season;
 3. runs WOFOST once in water-limited mode on that spliced series (the
-   projection), and compares it with the committed normal-weather distribution
+   projection), under the water regime water_regime.csv declares for that
+   region -- rainfed, or irrigated with a soil-moisture-triggered schedule --
+   and compares it with the committed normal-weather distribution
    in baseline_yields.csv -- the same model run over each of the last thirty
    years of real weather, precomputed because it never depends on the input;
 4. reports development stage, days to anthesis and maturity, the projected and
@@ -33,10 +35,10 @@ Outputs:
   outputs, so that file exists only when the model is run off-platform.
 
 This model makes no network calls at run time. It is a pure function of its
-input and the committed tables (soils.csv, planting_dates.csv, climatology.csv,
-baseline_yields.csv). PCSE's crop parameters would be downloaded on first use,
-so the Dockerfile bakes them into the image at a pinned commit and
-crop_data_provider() reads that local copy.
+input and the committed tables (soils.csv, planting_dates.csv, water_regime.csv,
+climatology.csv, baseline_yields.csv). PCSE's crop parameters would be
+downloaded on first use, so the Dockerfile bakes them into the image at a
+pinned commit and crop_data_provider() reads that local copy.
 
 Units are PCSE's WeatherDataContainer convention, matching node 1: TMIN/TMAX
 degC, IRRAD J/m2/day, VAP hPa, WIND m/s at 2 m, RAIN cm/day. Logs go to stderr;
@@ -71,6 +73,7 @@ DEFAULT_INPUT_PATH = HERE / "sample_input.json"
 DEFAULT_TRAJECTORY_PATH = Path("run") / "corn_yield_trajectory.output.json"
 SOILS_PATH = HERE / "soils.csv"
 PLANTING_PATH = HERE / "planting_dates.csv"
+WATER_REGIME_PATH = HERE / "water_regime.csv"
 CLIMATOLOGY_PATH = HERE / "climatology.csv"
 CLIMATOLOGY_META_PATH = HERE / "climatology.meta.json"
 BASELINES_PATH = HERE / "baseline_yields.csv"
@@ -439,7 +442,118 @@ def build_provider(series, latitude, longitude, elevation, angstrom_a, angstrom_
 
 # --- the model run -----------------------------------------------------------
 
-def run_wofost(provider, soil_row, planting_day, variety_name, max_duration, region_key, label):
+def irrigation_trigger_sm(soil, regime_row, region_key):
+    """
+    The soil moisture at which an irrigated region waters, as a fraction.
+
+    Extension irrigation scheduling is written in terms of *depletion* of
+    plant-available water, while PCSE's StateEvent fires on SM itself. The two
+    meet here: at trigger_depletion_fraction of the available water gone,
+
+        SM = SMW + (1 - depletion) x (SMFCF - SMW)
+
+    so 0.50 means "irrigate once half the plant-available water is used". The
+    fraction is read per region from water_regime.csv rather than assumed, and
+    the SMFCF/SMW it is applied to are that region's own soils.csv values.
+    """
+    try:
+        depletion = float(regime_row["trigger_depletion_fraction"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RunError(
+            f"water_regime.csv row for '{region_key}' is irrigated but has no usable "
+            f"trigger_depletion_fraction: {exc}") from exc
+    if not 0.0 < depletion < 1.0:
+        raise RunError(
+            f"water_regime.csv row for '{region_key}': trigger_depletion_fraction "
+            f"{depletion} is not a fraction between 0 and 1.")
+    return soil["SMW"] + (1.0 - depletion) * (soil["SMFCF"] - soil["SMW"])
+
+
+def agromanagement_for(planting_day, variety_name, max_duration, soil, regime_row, region_key):
+    """
+    The PCSE agromanagement campaign for one region.
+
+    A rainfed region gets exactly the campaign every region in this bundle used
+    before brief 0002: no events at all. An irrigated region gets the same
+    campaign plus one StateEvent that waters when the profile dries to its
+    trigger. The regime comes from the committed water_regime.csv row; nothing
+    here infers it from how the region key is spelled.
+
+    Shared with build_baselines.py on purpose. The baseline distribution and the
+    projection must differ in nothing but weather, so they cannot be allowed to
+    drift apart by maintaining two copies of this.
+    """
+    campaign = {
+        "CropCalendar": {
+            "crop_name": CROP_NAME,
+            "variety_name": variety_name,
+            "crop_start_date": planting_day,
+            "crop_start_type": "sowing",
+            "crop_end_date": planting_day + timedelta(days=max_duration),
+            "crop_end_type": "maturity",
+            "max_duration": max_duration,
+        },
+        "TimedEvents": None,
+        "StateEvents": None,
+    }
+
+    regime = (regime_row.get("regime") or "").strip()
+    if regime == "rainfed":
+        return [{planting_day: campaign}]
+    if regime != "irrigated":
+        raise RunError(
+            f"water_regime.csv row for '{region_key}' has regime '{regime}', which is "
+            f"neither 'rainfed' nor 'irrigated'.")
+
+    try:
+        # CENTIMETRES. The irrigate signal takes `amount` in cm: the handler sets
+        # RIRR = amount x efficiency, and RIRR is documented cm/day
+        # (pcse/soil/classic_waterbalance.py:209,633; pcse/signals.py:177 says so
+        # too). PCSE's own agromanager docstring examples read as though the field
+        # were mm, which would apply ten times the water and still produce
+        # plausible-looking output. Hence the column name.
+        amount_cm = float(regime_row["irrigation_amount_cm"])
+        efficiency = float(regime_row["efficiency"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RunError(
+            f"water_regime.csv row for '{region_key}' is irrigated but has no usable "
+            f"irrigation_amount_cm/efficiency: {exc}") from exc
+    if amount_cm <= 0 or not 0.0 < efficiency <= 1.0:
+        raise RunError(
+            f"water_regime.csv row for '{region_key}': irrigation_amount_cm {amount_cm} "
+            f"and efficiency {efficiency} must be positive, with efficiency at most 1.")
+
+    trigger_sm = irrigation_trigger_sm(soil, regime_row, region_key)
+    campaign["StateEvents"] = [{
+        "event_signal": "irrigate",
+        "event_state": "SM",
+        # 'falling': fire as the profile dries THROUGH the trigger. With 'either'
+        # the same event would fire again on the way back up, right after the
+        # water was applied -- see pcse.agromanager.StateEventsDispatcher.
+        "zero_condition": "falling",
+        "name": f"soil-moisture irrigation ({region_key})",
+        "comment": "irrigation amounts in cm of water",
+        "events_table": [
+            # The keyword is 'amount', NOT 'irrigation_amount'. PCSE's handler is
+            # WaterbalanceFD._on_IRRIGATE(self, amount, efficiency) and the
+            # events_table values are splatted into it verbatim, so the name in
+            # every agromanager docstring example ('irrigation_amount') raises
+            # TypeError at the first trigger. pcse/signals.py:173 has the real one.
+            {round(trigger_sm, 4): {"amount": amount_cm, "efficiency": efficiency}}
+        ],
+    }]
+    # PCSE requires a trailing EMPTY campaign whenever a campaign carries
+    # StateEvents: unlike a crop calendar, a state event has no end date of its
+    # own, so AgroManager.end_date refuses to guess one and raises instead. The
+    # trailing date is the campaign's end, and it is the same crop_end_date the
+    # calendar already carries, so this adds a required declaration rather than
+    # changing when the run stops. Rainfed regions keep the single-campaign
+    # definition they have always had.
+    return [{planting_day: campaign}, {planting_day + timedelta(days=max_duration): None}]
+
+
+def run_wofost(provider, soil_row, planting_day, variety_name, max_duration, region_key,
+               label, regime_row):
     """One water-limited WOFOST run. Returns (summary, daily output)."""
     try:
         soil = {name: float(soil_row[name]) for name in SOIL_PARAMETERS}
@@ -450,21 +564,8 @@ def run_wofost(provider, soil_row, planting_day, variety_name, max_duration, reg
     except (KeyError, ValueError) as exc:
         raise RunError(f"soils.csv row for '{region_key}' has no usable WAV: {exc}") from exc
 
-    agromanagement = [{
-        planting_day: {
-            "CropCalendar": {
-                "crop_name": CROP_NAME,
-                "variety_name": variety_name,
-                "crop_start_date": planting_day,
-                "crop_start_type": "sowing",
-                "crop_end_date": planting_day + timedelta(days=max_duration),
-                "crop_end_type": "maturity",
-                "max_duration": max_duration,
-            },
-            "TimedEvents": None,
-            "StateEvents": None,
-        }
-    }]
+    agromanagement = agromanagement_for(
+        planting_day, variety_name, max_duration, soil, regime_row, region_key)
     parameters = ParameterProvider(
         cropdata=crop_data_provider(variety_name, region_key),
         soildata=soil,
@@ -478,7 +579,19 @@ def run_wofost(provider, soil_row, planting_day, variety_name, max_duration, reg
     summary = model.get_summary_output()
     if not summary:
         raise RunError(f"region '{region_key}': the {label} WOFOST run produced no summary")
-    return summary[0], model.get_output()
+
+    # Keep only the days the crop was actually in the ground. An irrigated
+    # region's campaign has to declare a trailing end date (see
+    # agromanagement_for), and the engine then keeps stepping the water balance
+    # after maturity, emitting rows whose crop variables are all None. Every
+    # consumer here -- the stage, the stress windows, the trajectory, the mean
+    # RFTRA -- is about the growing crop, and None would poison each of them.
+    # For a rainfed region this filter removes nothing: the run already stops at
+    # maturity, which is what keeps those regions bit-for-bit unchanged.
+    daily = [row for row in model.get_output() if row.get("DVS") is not None]
+    if not daily:
+        raise RunError(f"region '{region_key}': the {label} WOFOST run produced no crop days")
+    return summary[0], daily
 
 
 _CROP_DATA = None
@@ -622,9 +735,11 @@ def trajectory_rows(region_key, daily, series_by_date, flags_by_date):
 
 def process_region(region_key, region_rows, tables, settings, document):
     soils, planting, normals = tables["soils"], tables["planting"], tables["normals"]
+    regimes = tables["regimes"]
     # Fail loudly on a region node 1 defines and this node has no row for,
     # rather than silently dropping it.
-    for name, table in (("soils.csv", soils), ("planting_dates.csv", planting)):
+    for name, table in (("soils.csv", soils), ("planting_dates.csv", planting),
+                        ("water_regime.csv", regimes)):
         if region_key not in table:
             raise RunError(
                 f"region '{region_key}' appears in the input but has no row in {name}. "
@@ -640,6 +755,7 @@ def process_region(region_key, region_rows, tables, settings, document):
 
     soil_row = soils[region_key]
     planting_row = planting[region_key]
+    regime_row = regimes[region_key]
     first_row = region_rows[0]
     latitude = float(first_row["LAT"])
     longitude = float(first_row["LON"])
@@ -670,7 +786,8 @@ def process_region(region_key, region_rows, tables, settings, document):
     projection_summary, projection_daily = run_wofost(
         build_provider(projection_series, latitude, longitude, elevation,
                        angstrom_a, angstrom_b, "projection"),
-        soil_row, planting_day, variety_name, max_duration, region_key, "projection")
+        soil_row, planting_day, variety_name, max_duration, region_key, "projection",
+        regime_row)
 
     if projection_summary.get("DOM") is None:
         raise RunError(
@@ -744,13 +861,18 @@ def process_region(region_key, region_rows, tables, settings, document):
 # --- output ------------------------------------------------------------------
 
 def build_metadata(document, settings, climatology_meta, baselines_meta,
-                   soils, planting, region_keys, crop_parameters_sha):
+                   soils, planting, regimes, region_keys, crop_parameters_sha):
     node1_metadata = document.get("metadata") or {}
     return {
         "date": settings["as_of"],
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "pcse_version": pcse_version(),
-        "wofost_engine": "Wofost72_WLP_FD (water-limited, free-draining)",
+        "wofost_engine": (
+            "Wofost72_WLP_FD (water-limited, free-draining) for every region. Regions "
+            "water_regime.csv declares irrigated additionally carry a PCSE StateEvent "
+            "that irrigates on soil moisture, so they keep a live water balance and a "
+            "drought signal rather than running as potential production. See "
+            "metadata.water_regime for what each region actually used."),
         "crop": CROP_NAME,
         "crop_parameters": (
             "pcse.input.YAMLCropDataProvider reading github.com/ajwdewit/WOFOST_crop_parameters, "
@@ -807,6 +929,33 @@ def build_metadata(document, settings, climatology_meta, baselines_meta,
             }
             for key in region_keys if key in planting
         },
+        # Per region, so a reader can tell an irrigated run from a rainfed one
+        # without going to the README. The baseline vintage is repeated here
+        # because the distribution a region's anomaly is measured against must
+        # have been built under the same regime the projection just used.
+        "water_regime": {
+            key: {
+                "regime": regimes[key]["regime"],
+                "trigger_depletion_fraction": (
+                    float(regimes[key]["trigger_depletion_fraction"])
+                    if regimes[key].get("trigger_depletion_fraction") else None),
+                "irrigation_amount_cm": (
+                    float(regimes[key]["irrigation_amount_cm"])
+                    if regimes[key].get("irrigation_amount_cm") else None),
+                "efficiency": (
+                    float(regimes[key]["efficiency"])
+                    if regimes[key].get("efficiency") else None),
+                "baseline_vintage": {
+                    "period": baselines_meta.get("period"),
+                    "built_at": baselines_meta.get("built_at"),
+                    "regime": (baselines_meta.get("regions", {})
+                               .get(key, {}).get("regime")),
+                },
+                "method": regimes[key]["method"],
+                "source": regimes[key]["source"],
+            }
+            for key in region_keys if key in regimes
+        },
         "upstream": {
             "model": "agromet-bundles/crop-weather",
             "date": node1_metadata.get("date"),
@@ -841,6 +990,7 @@ def main():
     grouped = group_rows(document)
     soils = read_csv_keyed(SOILS_PATH)
     planting = read_csv_keyed(PLANTING_PATH)
+    regimes = read_csv_keyed(WATER_REGIME_PATH)
     normals = load_climatology()
     climatology_meta = load_climatology_meta()
     baselines = load_baselines()
@@ -878,7 +1028,7 @@ def main():
     for region_key in region_keys:
         snapshot, rows = process_region(
             region_key, grouped[region_key],
-            {"soils": soils, "planting": planting, "normals": normals,
+            {"soils": soils, "planting": planting, "regimes": regimes, "normals": normals,
              "baselines": baselines, "baselines_meta": baselines_meta},
             settings, document)
         snapshots.append(snapshot)
@@ -891,7 +1041,7 @@ def main():
 
     metadata = build_metadata(
         document, settings, climatology_meta, baselines_meta, soils, planting,
-        region_keys, crop_parameters_sha)
+        regimes, region_keys, crop_parameters_sha)
 
     trajectory_document = {
         "generated_at": metadata["generated_at"],

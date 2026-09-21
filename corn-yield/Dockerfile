@@ -50,13 +50,14 @@ RUN pip install --no-cache-dir \
 
 COPY --from=crop-parameters /crop_parameters /app/crop_parameters
 
-# The committed tables are part of the model, not inputs: the soil and planting
-# choices, the 1995-2024 climatology normals, and the 30-year baseline yield
-# distribution. build_climatology.py, build_baselines.py and check_yield.py are
+# The committed tables are part of the model, not inputs: the soil, planting and
+# water-regime choices, the 1995-2024 climatology normals, and the 30-year
+# baseline yield distribution. build_climatology.py, build_baselines.py and check_yield.py are
 # development tools and are deliberately not copied in.
 COPY runner.py \
      soils.csv \
      planting_dates.csv \
+     water_regime.csv \
      climatology.csv \
      climatology.meta.json \
      baseline_yields.csv \

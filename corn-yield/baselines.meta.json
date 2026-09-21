@@ -7,7 +7,7 @@
   "max_duration_days": 200,
   "source": "Open-Meteo archive (archive-api.open-meteo.com/v1/archive, models=era5), ERA5 reanalysis. Weather data by Open-Meteo.com, CC BY 4.0.",
   "method": "One Wofost72_WLP_FD run per year of 1995-2024 on that year's real daily ERA5 weather, with the same soil, planting date, variety and engine the runner uses for its projection. Real years are used rather than a mean climatology because averaging destroys the structure of rainfall, which is what the water balance responds to. The baseline is the median of these yields; the percentile rank is the share of them below the projection.",
-  "built_at": "2026-09-20T01:29:00+00:00",
+  "built_at": "2026-09-21T21:10:18+00:00",
   "regions": {
     "ia": {
       "state": "IA",
@@ -20,6 +20,7 @@
       "max_kg_ha": 13414.0,
       "planting_date": "05-04",
       "variety_name": "Grain_maize_203",
+      "regime": "rainfed",
       "angstrom_a": 0.1883,
       "angstrom_b": 0.5888,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -35,6 +36,7 @@
       "max_kg_ha": 12197.3,
       "planting_date": "05-04",
       "variety_name": "Grain_maize_204",
+      "regime": "rainfed",
       "angstrom_a": 0.1697,
       "angstrom_b": 0.5924,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -50,23 +52,41 @@
       "max_kg_ha": 13584.5,
       "planting_date": "05-06",
       "variety_name": "Grain_maize_201",
+      "regime": "rainfed",
       "angstrom_a": 0.2065,
       "angstrom_b": 0.5762,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
     },
-    "ne": {
+    "ne_irrigated": {
       "state": "NE",
       "n_years": 30,
-      "median_kg_ha": 3935.9,
-      "mean_kg_ha": 3949.6,
-      "p10_kg_ha": 371.6,
-      "p90_kg_ha": 9117.8,
-      "min_kg_ha": 23.5,
-      "max_kg_ha": 10612.0,
+      "median_kg_ha": 9339.2,
+      "mean_kg_ha": 9368.7,
+      "p10_kg_ha": 8091.8,
+      "p90_kg_ha": 10585.9,
+      "min_kg_ha": 7366.1,
+      "max_kg_ha": 12176.2,
       "planting_date": "05-03",
       "variety_name": "Grain_maize_203",
-      "angstrom_a": 0.2273,
-      "angstrom_b": 0.5431,
+      "regime": "irrigated",
+      "angstrom_a": 0.2326,
+      "angstrom_b": 0.5392,
+      "angstrom_source": "estimated from the 1995-2024 radiation series"
+    },
+    "ne_rainfed": {
+      "state": "NE",
+      "n_years": 30,
+      "median_kg_ha": 4236.1,
+      "mean_kg_ha": 4013.1,
+      "p10_kg_ha": 324.1,
+      "p90_kg_ha": 7866.4,
+      "min_kg_ha": 49.7,
+      "max_kg_ha": 10531.1,
+      "planting_date": "05-03",
+      "variety_name": "Grain_maize_203",
+      "regime": "rainfed",
+      "angstrom_a": 0.2236,
+      "angstrom_b": 0.5456,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
     },
     "in": {
@@ -80,6 +100,7 @@
       "max_kg_ha": 11513.5,
       "planting_date": "05-06",
       "variety_name": "Grain_maize_204",
+      "regime": "rainfed",
       "angstrom_a": 0.1558,
       "angstrom_b": 0.6065,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -95,6 +116,7 @@
       "max_kg_ha": 11380.7,
       "planting_date": "05-10",
       "variety_name": "Grain_maize_201",
+      "regime": "rainfed",
       "angstrom_a": 0.2321,
       "angstrom_b": 0.5429,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -110,6 +132,7 @@
       "max_kg_ha": 11739.6,
       "planting_date": "05-11",
       "variety_name": "Grain_maize_204",
+      "regime": "rainfed",
       "angstrom_a": 0.156,
       "angstrom_b": 0.6053,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -125,23 +148,41 @@
       "max_kg_ha": 13064.2,
       "planting_date": "05-08",
       "variety_name": "Grain_maize_202",
+      "regime": "rainfed",
       "angstrom_a": 0.1733,
       "angstrom_b": 0.6009,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
     },
-    "ks": {
+    "ks_irrigated": {
       "state": "KS",
       "n_years": 30,
-      "median_kg_ha": 1490.6,
-      "mean_kg_ha": 1870.4,
-      "p10_kg_ha": 91.7,
-      "p90_kg_ha": 3931.2,
-      "min_kg_ha": 0.0,
-      "max_kg_ha": 5795.4,
+      "median_kg_ha": 6164.3,
+      "mean_kg_ha": 6275.2,
+      "p10_kg_ha": 5022.0,
+      "p90_kg_ha": 7688.4,
+      "min_kg_ha": 3924.1,
+      "max_kg_ha": 8471.0,
       "planting_date": "04-22",
       "variety_name": "Grain_maize_205",
-      "angstrom_a": 0.2318,
-      "angstrom_b": 0.5319,
+      "regime": "irrigated",
+      "angstrom_a": 0.2562,
+      "angstrom_b": 0.514,
+      "angstrom_source": "estimated from the 1995-2024 radiation series"
+    },
+    "ks_rainfed": {
+      "state": "KS",
+      "n_years": 30,
+      "median_kg_ha": 1805.6,
+      "mean_kg_ha": 2441.9,
+      "p10_kg_ha": 234.9,
+      "p90_kg_ha": 5304.4,
+      "min_kg_ha": 2.2,
+      "max_kg_ha": 6128.8,
+      "planting_date": "04-22",
+      "variety_name": "Grain_maize_205",
+      "regime": "rainfed",
+      "angstrom_a": 0.2099,
+      "angstrom_b": 0.5506,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
     },
     "mo": {
@@ -155,6 +196,7 @@
       "max_kg_ha": 9022.5,
       "planting_date": "04-18",
       "variety_name": "Grain_maize_205",
+      "regime": "rainfed",
       "angstrom_a": 0.1641,
       "angstrom_b": 0.5923,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
