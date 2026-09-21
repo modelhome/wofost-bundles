@@ -66,7 +66,7 @@ Parameters, all declared per row in `water_regime.csv` with their source text:
 | Parameter | Value | Basis |
 |---|---|---|
 | `trigger_depletion_fraction` | 0.50 | Management-allowed depletion for corn: UNL Extension NebGuide **G1850**, *Irrigation Management for Corn* (verified at planning time). Trigger `SM` is derived, not stored: `SMW + (1 - 0.50) * (SMFCF - SMW)`. |
-| `irrigation_amount_cm` | 2.54 | One inch per application, mid-range of G1850's 0.75-1.3 in for medium- and fine-textured soils. Well inside the profile's total available water (measured: 19.2 cm for `ne`, 21.6 cm for `ks`), so an application refills rather than drains away. |
+| `irrigation_amount_cm` | 2.54 **gross** | One inch per application, mid-range of G1850's 0.75-1.3 in for medium- and fine-textured soils. An *applied* depth, so it maps onto PCSE's `amount` directly; at 0.85 efficiency the soil receives 2.159 cm net. Well inside the profile's total available water (measured: 19.2 cm for `ne`, 21.6 cm for `ks`), so an application refills rather than drains away. |
 | `efficiency` | 0.85 | The centre-pivot efficiency K-State Research and Extension **L915** assumes for general planning; G1850 gives 85-90% for well-maintained systems. PCSE multiplies it in directly (`_RIRR = amount * efficiency`). |
 
 **`irrigation_amount` is in centimetres, not millimetres.**
@@ -165,7 +165,7 @@ verbatim. No renumbering was needed.
 | AC-9 | `docker build` succeeds; `docker run --network none` reproduces identical output apart from `generated_at` | `Dockerfile` `COPY water_regime.csv` | Built and run offline: rows, columns and trajectory **identical**; metadata differs in nothing but `generated_at`; `crop_parameters_pin_verified: true` at `f0a6491f2368` | **pass** |
 | AC-10 | `validity_domain` no longer says rainfed throughout; validator passes with no annotation warnings | `Modelfile.toml` `validity_domain` (591/600) and `provenance` (367/400) | `python -m orchestration.modelfile validate` → `OK`. Also re-confirmed `check_schema_compatibility`: binds to `crop_weather_daily`, correctly refused by `crop_weather_summary` | **pass** |
 | AC-11 | README documents the table, mechanism, parameters, limits, rebuilt baselines and the node 3 breaking change | `corn-yield/README.md` — new `water_regime.csv` section, rewritten limitations, breaking-change notice at the top | Review; measured figures recorded in the Validation section | **pass** |
-| AC-12 | `check_yield.py` passes in full, including the existing checks, with ten-region assumptions updated not deleted | `check_yield.py` — `check_tables` rewritten, four checks added, none removed | **372/372 pass** (baseline 83; the rise is per-region checks over 12 regions instead of 2, plus the new checks) | **pass** |
+| AC-12 | `check_yield.py` passes in full, including the existing checks, with ten-region assumptions updated not deleted | `check_yield.py` — `check_tables` rewritten, four checks added, none removed | **379/379 pass** (baseline 83; the rise is per-region checks over 12 regions instead of 2, plus the new checks) | **pass** |
 
 ## Verification
 
@@ -176,7 +176,7 @@ output as its argument.
 | Command | Purpose | Baseline result | Final result | Assessment |
 |---|---|---|---|---|
 | `python runner.py sample_input.json > run/corn_yield_snapshot.output.json` | The model runs end to end, JSON on stdout only | pass — 2 regions (ia, ne); ia +22.02% pct 70, ne +51.9% pct 80, reproducing `CLAUDE.md` | pass — 12 regions, all reach maturity, ~1 s | improved (scope: 2 -> 12 regions) |
-| `python check_yield.py run/corn_yield_snapshot.output.json` | The bundle's committed validation | **83/83 pass** | **372/372 pass** | improved |
+| `python check_yield.py run/corn_yield_snapshot.output.json` | The bundle's committed validation | **83/83 pass** | **379/379 pass** | improved |
 | AC-3 fixture: pre-change figures for the eight unsplit states | Regression surface | captured at `f53e84a`, committed as `unsplit_regression.json` | all 8 states, all 21 fields identical | unchanged (as required) |
 | `build_climatology.py <regions.csv>` | Rebuild normals for 12 keys | n/a (10-key file committed) | 4,380 rows/12 keys; 2,920 unsplit rows byte-identical | unchanged for unsplit |
 | `build_baselines.py <regions.csv> <pinned checkout>` | Rebuild 30-year baselines for 12 keys | n/a (10-key file committed) | 360 rows/12 keys; 240 unsplit years byte-identical | unchanged for unsplit |
@@ -279,6 +279,30 @@ rather than half-rebuilt. The eleven fetched series are cached in
 `.climatology-cache/`, so a retry needs only `mo`. Retried on a timer; see the
 verification table for the outcome. This is an environmental rate limit, not a
 defect in the change.
+
+### C-6. Copilot review (PR #2): two findings, both valid
+
+**Finding 1 -- the baseline regime was recorded but never enforced.** AC-8 put
+each region's baseline regime in the output metadata and `check_yield.py`
+compared it, but `check_yield.py` is a development tool and is not in the image.
+Nothing in the runner itself stopped a rainfed-built baseline being used for an
+irrigated projection -- the exact silent wrong answer `check_crop_parameters_pin`
+exists to prevent, one field over. Added `check_baseline_regimes`, called once
+before any projection runs so a mismatch costs no simulation. A baseline that
+records no regime at all (one built before `water_regime.csv` existed) is treated
+as a mismatch rather than assumed rainfed. Covered by
+`check_baseline_regime_mismatch_fails`, which doctors the metadata both ways.
+
+**Finding 2 -- `irrigation_amount_cm` was labelled NET, and is GROSS.** PCSE adds
+`amount x efficiency` to the soil, so 2.54 cm at 0.85 efficiency delivers 2.159
+cm net. Calling the committed value net made the provenance inconsistent with the
+simulated management. G1850's 0.75-1.3 inch application depth is an *applied*
+depth, so the value maps onto PCSE's `amount` correctly and only the label was
+wrong: relabelled as gross in `water_regime.csv`, the runner comment, the README
+and this plan, with the net depth stated. **No number changed**, and the snapshot
+rows are byte-identical to the pre-review run.
+
+Checks went 372 -> **379/379**.
 
 ## Implementation steps
 

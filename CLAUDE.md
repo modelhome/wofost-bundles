@@ -350,7 +350,7 @@ corn-yield/
   soil moisture at 50% depletion, 2.54 cm per application, 0.85 efficiency, all
   declared in `water_regime.csv`. Simulated irrigated-minus-rainfed gap:
   **ks +133.2%** against a NASS operation-level +105%, **ne +57.4%** against
-  +55%. Checks went 83 -> **372/372**.
+  +55%. Checks went 83 -> **379/379**.
 - **Copilot review (PR #1):** four findings, all addressed -- an unpinned
   crop-parameter baseline, required-but-nullable output fields, silent gap
   filling, and a stale annotation. Checks went 54 -> **82/82**. Rebuilding the

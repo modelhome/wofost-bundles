@@ -270,8 +270,13 @@ its name, and `check_yield.py` asserts that no such inference exists in the code
 |---|---|---|
 | `regime` | `irrigated` | `rainfed` |
 | `trigger_depletion_fraction` | 0.50 | empty |
-| `irrigation_amount_cm` | 2.54 | empty |
+| `irrigation_amount_cm` | 2.54 (gross) | empty |
 | `efficiency` | 0.85 | empty |
+
+`irrigation_amount_cm` is the **gross** application depth -- the depth the system
+applies, which is what extension application-depth guidance states. PCSE adds
+`amount x efficiency` to the soil, so 2.54 cm gross at 0.85 efficiency delivers
+**2.159 cm net** per application.
 
 A rainfed region is handed exactly the agromanagement every region in this
 bundle used before this table existed: no events at all. An irrigated region
@@ -303,7 +308,8 @@ percent of plant-available water, and centre-pivot application efficiency of 85
 to 90 percent, come from University of Nebraska-Lincoln Extension NebGuide
 G1850, *Irrigation Management for Corn*; the same publication gives application
 depths of 0.75 to 1.3 inches for medium- and fine-textured soils, of which 1.0
-inch = 2.54 cm is the mid-range increment. The 0.85 efficiency is the value
+inch = 2.54 cm is the mid-range increment. That is an *applied* depth, so it
+maps onto PCSE's `amount` directly and the efficiency does the rest. The 0.85 efficiency is the value
 K-State Research and Extension L915 assumes for a centre pivot for general
 planning purposes.
 
@@ -556,7 +562,7 @@ profile's plant-available water (the cm/mm guard), and that **the eight unsplit
 states produce figures identical to the pre-change model** -- compared against
 `unsplit_regression.json`, captured before any of this was built.
 
-**Measured, 2026-09-19, all twelve regions: 372/372 checks pass.** The simulated
+**Measured, 2026-09-19, all twelve regions: 379/379 checks pass.** The simulated
 irrigated-minus-rainfed yield gap came out at **+133.2% for Kansas** against a
 NASS operation-level reference of +105%, and **+57.4% for Nebraska** against
 +55%. Rebuilding the climatology and the baselines reproduced every one of the

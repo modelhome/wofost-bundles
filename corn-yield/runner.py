@@ -236,6 +236,43 @@ def check_crop_parameters_pin(baselines_meta):
     return actual
 
 
+def check_baseline_regimes(regimes, baselines_meta, region_keys):
+    """
+    The baseline and the projection must use the same water regime.
+
+    Exactly the failure check_crop_parameters_pin() exists to prevent, one field
+    over. The anomaly is (projection - baseline) / baseline, so if a region's
+    baseline distribution was built rainfed and its projection runs irrigated,
+    the percentage is comparing two different models while the metadata claims
+    they match -- a silent wrong answer, which is worse than a failed run.
+
+    A baseline built before water_regime.csv existed records no regime at all.
+    That is a mismatch too: it cannot be assumed rainfed just because it is old.
+    Rebuild it with build_baselines.py rather than guessing.
+
+    Checked once, before any projection runs, so a mismatch costs no simulation.
+    """
+    recorded = baselines_meta.get("regions", {})
+    mismatches = []
+    for key in region_keys:
+        regime_row = regimes.get(key)
+        if regime_row is None:
+            continue  # process_region raises on this, with a better message
+        declared = regime_row["regime"]
+        built_under = recorded.get(key, {}).get("regime")
+        if built_under != declared:
+            mismatches.append(
+                f"{key}: water_regime.csv says '{declared}', but baseline_yields.csv "
+                f"was built under {built_under!r}")
+    if mismatches:
+        raise RunError(
+            "the committed baseline was not built under the water regime this run "
+            "uses, so the yield anomaly would compare two different models:\n  "
+            + "\n  ".join(mismatches)
+            + "\nRebuild the baseline with build_baselines.py against the current "
+              "water_regime.csv.")
+
+
 def median(sorted_values):
     count = len(sorted_values)
     middle = count // 2
@@ -506,12 +543,13 @@ def agromanagement_for(planting_day, variety_name, max_duration, soil, regime_ro
             f"neither 'rainfed' nor 'irrigated'.")
 
     try:
-        # CENTIMETRES. The irrigate signal takes `amount` in cm: the handler sets
-        # RIRR = amount x efficiency, and RIRR is documented cm/day
-        # (pcse/soil/classic_waterbalance.py:209,633; pcse/signals.py:177 says so
-        # too). PCSE's own agromanager docstring examples read as though the field
-        # were mm, which would apply ten times the water and still produce
-        # plausible-looking output. Hence the column name.
+        # CENTIMETRES, and GROSS. The irrigate signal takes `amount` in cm and the
+        # handler sets RIRR = amount x efficiency, so `amount` is the depth the
+        # system applies and efficiency decides how much of it reaches the soil.
+        # RIRR is documented cm/day (pcse/soil/classic_waterbalance.py:209,633;
+        # pcse/signals.py:177 says so too). PCSE's own agromanager docstring
+        # examples read as though the field were mm. Hence the column name, and
+        # hence water_regime.csv stating the net depth that follows from the pair.
         amount_cm = float(regime_row["irrigation_amount_cm"])
         efficiency = float(regime_row["efficiency"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -1022,6 +1060,9 @@ def main():
     region_keys = sorted(grouped)
     log(f"corn-yield: {len(region_keys)} region(s) as of {settings['as_of']}: "
         f"{', '.join(region_keys)}")
+    # Before any projection runs: a regime mismatch invalidates every anomaly
+    # this run would publish, so it is not worth simulating first.
+    check_baseline_regimes(regimes, baselines_meta, region_keys)
 
     snapshots = []
     trajectories = {}

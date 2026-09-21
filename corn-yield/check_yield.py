@@ -544,6 +544,41 @@ def check_baseline_regime_matches(output):
               recorded == row["regime"], f"{recorded} vs {row['regime']}")
 
 
+def check_baseline_regime_mismatch_fails():
+    print("a baseline built under the wrong regime fails before any projection runs")
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    real_meta = runner.load_baselines_meta()
+    keys = sorted(regimes)
+
+    # The real pair must pass, or the check below proves nothing.
+    try:
+        runner.check_baseline_regimes(regimes, real_meta, keys)
+        check("the committed baseline and regime table agree", True)
+    except runner.RunError as exc:
+        check("the committed baseline and regime table agree", False, str(exc)[:200])
+
+    for scenario, doctored in (
+            ("a region's baseline was built under the other regime",
+             {"regions": {k: dict(v, regime=("rainfed" if v.get("regime") == "irrigated"
+                                             else "irrigated"))
+                          for k, v in real_meta.get("regions", {}).items()}}),
+            ("the baseline predates water_regime.csv and records no regime",
+             {"regions": {k: {key: value for key, value in v.items() if key != "regime"}
+                          for k, v in real_meta.get("regions", {}).items()}})):
+        try:
+            runner.check_baseline_regimes(regimes, doctored, keys)
+        except runner.RunError as exc:
+            message = str(exc)
+            check(f"{scenario}: the run refuses", True)
+            check(f"{scenario}: the message names the two tables",
+                  "water_regime.csv" in message and "baseline_yields.csv" in message,
+                  message[:160])
+            check(f"{scenario}: the message says how to fix it",
+                  "build_baselines.py" in message, message[:160])
+        else:
+            check(f"{scenario}: the run refuses", False, "it was accepted")
+
+
 def check_irrigation_gap(output):
     print("the irrigated stratum out-yields the rainfed one (AC-5)")
     rows = {row["region_key"]: row for row in output["rows"]}
@@ -689,6 +724,7 @@ def main():
     check_tables(output)
     check_regime_table(output)
     check_baseline_regime_matches(output)
+    check_baseline_regime_mismatch_fails()
     check_irrigation_gap(output)
     check_unsplit_regions_unchanged()
     check_units(output)
