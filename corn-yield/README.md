@@ -35,14 +35,13 @@ corn-yield/
   README.md
 ```
 
-> **Region set changed (breaking for node 3).** Node 1 now splits Nebraska and
-> Kansas into irrigated and rainfed strata, so this model emits twelve regions
-> keyed `ia, il, mn, ne_irrigated, ne_rainfed, in, sd, oh, wi, ks_irrigated,
-> ks_rainfed, mo` -- `ne` and `ks` no longer exist. `ag-commodity-bundles/corn-price`
-> still keys `production_weights.csv` and `yield_history.csv` on the old ten and
-> raises on an unknown `region_key` by design, so it must be updated before the
-> four-step flow runs end to end. Sequence: this change, then node 3's, then
-> re-register both on Model Home.
+> **Region set changed.** Node 1 now splits Nebraska and Kansas into irrigated
+> and rainfed strata, so this model emits twelve regions keyed `ia, il, mn,
+> ne_irrigated, ne_rainfed, in, sd, oh, wi, ks_irrigated, ks_rainfed, mo` --
+> `ne` and `ks` no longer exist. `ag-commodity-bundles/corn-price` (node 3) was
+> re-keyed to match by its brief 0003 (PR #3, 2026-09-21). Both models must be
+> re-registered on Model Home, and a flow input stored before the split is
+> stale.
 
 ## Running it
 
@@ -542,6 +541,7 @@ physiology, which is worse than not having one.
 - Crop-reporting-district granularity instead of one point per state.
 - Constraining irrigation supply: an aquifer-decline or allocation limit, and a
   pumping-capacity ceiling, so the irrigated strata stop being an upper bound.
+  Briefed as `docs/features/0003-irrigation-supply-limits.md`.
 - Soybean and wheat bundles, which would reuse the same machinery with a
   different crop and parameter set.
 

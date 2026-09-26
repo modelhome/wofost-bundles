@@ -360,23 +360,24 @@ corn-yield/
 
 ### Task list
 
-1. **Node 3 is now broken by design.** `ag-commodity-bundles/corn-price` keys
-   `production_weights.csv` and `yield_history.csv` on the old ten regions and
-   raises on an unknown `region_key`. Write and run its matching brief before the
-   four-step flow is expected to work end to end.
-2. Add the model on a Model Home stack from the branch subfolder URL and run it
-   with node 1's output (needs a signed-in human at the Auth0 login).
-3. After merge: register on Model Home from `main`, then re-register node 3, and
-   compose the flow.
-4. Follow-ups, detailed in the bundle README: constraining irrigation supply
-   (aquifer decline, allocation limits, pumping capacity), soils from
-   gNATSGO/SSURGO, a parameterised silking-heat overlay, and crop-reporting-
-   district granularity.
+1. ~~Re-key node 3 on the twelve regions.~~ Done: `ag-commodity-bundles` brief
+   0003 (PR #3, `7a07216`, 2026-09-21) re-keyed `production_weights.csv` and
+   `yield_history.csv` per stratum. The four-step flow is no longer broken by
+   design.
+2. Register on Model Home from `main`, re-register node 3, and compose the flow;
+   any stored flow input from before the split is stale (needs a signed-in human
+   at the Auth0 login).
+3. Brief 0003 (`docs/features/0003-irrigation-supply-limits.md`): a seasonal
+   allocation cap and a pumping-capacity ceiling for the irrigated strata, so
+   their drought protection stops being an upper bound.
+4. Other follow-ups, detailed in the bundle README: soils from gNATSGO/SSURGO, a
+   parameterised silking-heat overlay, and crop-reporting-district granularity.
 
 ## Task list
 
 1. ~~Create `modelhome/wofost-bundles` on GitHub and push `main`.~~ Done
    2026-09-19.
 2. Finish `corn-yield/` (brief 0001): see that bundle's task list above.
-3. Sibling repo still to come: `ag-commodity-bundles/corn-price/` (node 3),
-   which consumes this bundle's `yield_anomaly_pct` and `yield_percentile_rank`.
+3. ~~Sibling repo `ag-commodity-bundles/corn-price/` (node 3), which consumes
+   this bundle's `yield_anomaly_pct` and `yield_percentile_rank`.~~ Built, and
+   re-keyed on the twelve regions by its brief 0003.
