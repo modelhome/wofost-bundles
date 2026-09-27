@@ -43,10 +43,10 @@ cpu = "1"
 # that a schema default is a runnable "Example to paste", and a runnable example
 # for this model is a full weather table -- far too large to paste. It ships as
 # `example_file` instead: sample_input.json, a real node 1 output, which Model
-# Home offers under "Use example data?" as a link to the file, and checks fits
-# this schema whenever the model is saved. This model is meant to be run after
-# the weather model in a flow, which supplies the whole input; the optional
-# fields below all have working defaults in the runner.
+# Home offers under "Use example data?" as a link to the file, and checks that
+# it fits this schema whenever the model is saved. This model is meant to be
+# run after the weather model in a flow, which supplies the whole input; the
+# optional fields below all have working defaults in the runner.
 name = "crop_weather_daily"
 example_file = "sample_input.json"
 description = "The daily weather table from the US Corn Crop Weather model. In a flow this is wired straight from that model's output; nothing else needs filling in."
