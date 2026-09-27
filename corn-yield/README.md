@@ -21,7 +21,7 @@ corn-yield/
   Dockerfile              python:3.12-slim, pinned pcse
   runner.py               the model
   soils.csv               per-region water-holding parameters
-  water_regime.csv        per-region water regime and irrigation parameters
+  water_regime.csv        per-region water regime, irrigation parameters, supply limits
   planting_dates.csv      per-region planting date and maturity class
   climatology.csv         per-region daily weather normals, 1995-2024
   climatology.meta.json   provenance for the above
@@ -31,18 +31,18 @@ corn-yield/
   build_baselines.py      one-time baseline build (not in the image)
   check_yield.py          validation, incl. real WOFOST runs (not in the image)
   unsplit_regression.json pre-change figures for the eight unsplit states
+  regime_regression.json  pre-supply-limits figures, all twelve regions
   sample_input.json       a real node 1 output: all twelve regions, 2026
   README.md
 ```
 
-> **Region set changed (breaking for node 3).** Node 1 now splits Nebraska and
-> Kansas into irrigated and rainfed strata, so this model emits twelve regions
-> keyed `ia, il, mn, ne_irrigated, ne_rainfed, in, sd, oh, wi, ks_irrigated,
-> ks_rainfed, mo` -- `ne` and `ks` no longer exist. `ag-commodity-bundles/corn-price`
-> still keys `production_weights.csv` and `yield_history.csv` on the old ten and
-> raises on an unknown `region_key` by design, so it must be updated before the
-> four-step flow runs end to end. Sequence: this change, then node 3's, then
-> re-register both on Model Home.
+> **Region set changed.** Node 1 now splits Nebraska and Kansas into irrigated
+> and rainfed strata, so this model emits twelve regions keyed `ia, il, mn,
+> ne_irrigated, ne_rainfed, in, sd, oh, wi, ks_irrigated, ks_rainfed, mo` --
+> `ne` and `ks` no longer exist. `ag-commodity-bundles/corn-price` (node 3) was
+> re-keyed to match by its brief 0003 (PR #3, 2026-09-21). Both models must be
+> re-registered on Model Home, and a flow input stored before the split is
+> stale.
 
 ## Running it
 
@@ -97,7 +97,9 @@ on-platform.
 - **`corn_yield_snapshot`** -- one row per region: development stage and days to
   flowering and ripeness, projected and baseline yields, the anomaly and
   percentile rank, the stage-specific stress counts, and provenance. This is
-  what node 3 reads.
+  what node 3 reads. For each irrigated region, `metadata.water_regime` also
+  reports the supply limits in force, the water the season used, and what the
+  limits cost it (see [Supply limits](#supply-limits)).
 - **`corn_yield_trajectory`** -- the same values plus each region's day-by-day
   development, with each day marked `observed`, `forecast` or `normals` and
   carrying node 1's stress flags, for charting a season.
@@ -109,13 +111,13 @@ on-platform.
 | Piece | Choice |
 |---|---|
 | Version | PCSE **6.0.13** |
-| Engine | `Wofost72_WLP_FD` -- water-limited, free-draining |
+| Engine | `Wofost72_WLP_FD` -- water-limited, free-draining; irrigated regions run a subclass that irrigates from inside the daily rate step |
 | Crop | `maize`, from `YAMLCropDataProvider`, reading the parameter repository baked into the image |
 | Variety | per region from the `Grain_maize_201`..`_205` maturity ladder |
 | Site | `WOFOST72SiteDataProvider(WAV=...)` from `soils.csv` |
 | Soil | `soils.csv` (see below) |
-| Agromanagement | sown on the region's planting date, run to maturity, `max_duration` 200 days; irrigated regions additionally carry a soil-moisture irrigation trigger |
-| Water regime | `water_regime.csv` (see below) -- rainfed, or irrigated |
+| Agromanagement | sown on the region's planting date, run to maturity, `max_duration` 200 days; no events, for every region |
+| Water regime | `water_regime.csv` (see below) -- rainfed, or irrigated within declared supply limits |
 
 Water-limited rather than potential mode because drought is a primary driver of
 US corn yields, and it is what makes node 1's `RAIN` matter. The irrigated
@@ -272,29 +274,41 @@ its name, and `check_yield.py` asserts that no such inference exists in the code
 | `trigger_depletion_fraction` | 0.50 | empty |
 | `irrigation_amount_cm` | 2.54 (gross) | empty |
 | `efficiency` | 0.85 | empty |
+| `allocation_cap_cm` | empty -- a sourced "none" | empty |
+| `capacity_net_gpm_ac` | 3.85 (NE), 4.62 (KS) | empty |
+| `capacity_cm_day_gross` | 0.6101 (NE), 0.7321 (KS) | empty |
+| `limits_method`, `limits_source` | how each limit was chosen and converted, with citations | empty |
 
 `irrigation_amount_cm` is the **gross** application depth -- the depth the system
 applies, which is what extension application-depth guidance states. PCSE adds
 `amount x efficiency` to the soil, so 2.54 cm gross at 0.85 efficiency delivers
 **2.159 cm net** per application.
 
-A rainfed region is handed exactly the agromanagement every region in this
-bundle used before this table existed: no events at all. An irrigated region
-gets that same campaign plus one PCSE `StateEvent`:
-
-```
-event_signal: irrigate     event_state: SM     zero_condition: falling
-```
-
-which waters when the profile has dried to `trigger_depletion_fraction` of its
-plant-available water, that is at
+Every region, rainfed or irrigated, is handed the same agromanagement: sowing to
+maturity, no events. A rainfed region runs plain `Wofost72_WLP_FD`. An irrigated
+region runs `IrrigatedWofost72_WLP_FD`, a subclass whose daily rate step first
+calls an `IrrigationController`. On every day the profile has dried to
+`trigger_depletion_fraction` of its plant-available water, that is at
 
 ```
 SM = SMW + (1 - 0.50) x (SMFCF - SMW)
 ```
 
-from that region's own `soils.csv` row. `zero_condition: falling` matters: with
-`either`, the event would fire again on the rebound it had just caused.
+from that region's own `soils.csv` row, the controller applies
+
+```
+min(irrigation_amount_cm, capacity_cm_day_gross, allocation cap remaining)   gross, at most once a day
+```
+
+Until brief 0003 this was a PCSE `StateEvent` with `zero_condition: falling`,
+which fires only on the day the profile first drops through the trigger. That
+works for unlimited supply but not under a pumping ceiling: if one day's water
+fails to lift the profile back above the trigger, a crossing trigger never fires
+again that season. The controller is therefore a **level** trigger. With the
+limits removed the two agree exactly -- across all 60 irrigated baseline seasons
+and the sample projection, the profile rose back above the trigger the day after
+every application -- and `check_yield.py` proves the figures reproduce brief
+0002's to the last digit.
 
 **Why a trigger rather than potential production.** Running the irrigated strata
 as `Wofost72_PP` would have been simpler and is defensible -- fully irrigated
@@ -329,22 +343,94 @@ water it claims to. So `check_yield.py` asserts on the *declared value* -- that
 one application is smaller than the profile's plant-available water -- rather
 than hoping a wrong figure would surface downstream.
 
-**Two upstream traps sit in this area, and both are documentation bugs.** The
-keyword is `amount`, not the `irrigation_amount` used in every agromanager
-docstring example -- the events-table values are splatted straight into
+**Upstream traps in this area, all verified against the pinned 6.0.13.** The
+irrigate keyword is `amount`, not the `irrigation_amount` used in every
+agromanager docstring example: the keywords are passed straight to
 `WaterbalanceFD._on_IRRIGATE(self, amount, efficiency)`, so the documented name
-raises `TypeError` the first time the trigger fires. And a campaign carrying
-`StateEvents` must be followed by a trailing empty campaign, or PCSE refuses to
-infer an end date at all. Both are verified against the pinned 6.0.13, not
-recalled.
+raises `TypeError` the first time irrigation fires. That handler **sets** the
+day's irrigation rate rather than adding to it, so a second signal on the same
+day would silently replace the first; the controller sends at most one. And a
+campaign carrying `StateEvents` needs a trailing empty campaign, which in turn
+keeps the engine stepping past maturity; brief 0002 had to trim those days, and
+since the controller replaced the `StateEvent` no campaign needs one. The
+controller relies on two PCSE internals, overriding `Engine.calc_rates` (which
+runs straight after the agromanager, so it sees the soil moisture a `StateEvent`
+would) and `_send_signal`, and PCSE engines refuse undeclared attributes, so the
+controller is a declared trait. **Re-verify all of this on any PCSE upgrade.**
 
-**What irrigation here does not model.** Supply is unconstrained. There is no
-aquifer decline, no allocation or water-right limit, and no pumping-capacity
-ceiling when demand peaks in extreme heat -- the three things that actually bind
-on the High Plains. The drought protection simulated for `ne_irrigated` and
-`ks_irrigated` is therefore an **upper bound**, not a forecast of what a well
-can deliver in a bad year. Treat their anomalies as the optimistic end of the
-range.
+### Supply limits
+
+Brief 0003 replaced unlimited supply with the two limits that bind on High
+Plains irrigation, each declared per region with its own `limits_method` and
+`limits_source`.
+
+**Pumping-capacity ceiling: the extension design minimum.** UNL NebGuide
+**G1851**, *Minimum Center Pivot Design Capacities in Nebraska* (Kranz et al.,
+2008; Table I from von Bernuth et al. 1984), gives the net capacity that meets
+corn water needs in nine years out of ten, by soil and by one of two climatic
+regions. `ne_irrigated` is loam in Region 1 -- Howard County, where node 1's
+point lies, sits about 1.1 degrees east of G1851's dividing line -- so **3.85
+net gpm/ac**. The conversion, stated in full in the table:
+
+```
+1 acre-inch = 43,560 ft2 x (1/12) ft x 7.48052 gal/ft3 = 27,154 US gal
+1 gpm/ac for 24 h = 1,440 gal/ac/day = 0.05303 in/day = 0.13470 cm/day
+3.85 x 0.13470 = 0.5186 cm/day net / 0.85 efficiency = 0.6101 cm/day gross
+```
+
+Table I is a net rate of continuous operation -- G1851 scales it up by
+168 / (168 - downtime hours) to size a pump that runs less -- so no
+pumping-hours factor applies. **Kansas's ceiling is borrowed.** No K-State
+design-minimum table exists (MF2870 surveys nozzle packages, MF3066 states
+demand, and Lamm et al. 2007 relate yield to capacity), so `ks_irrigated` uses
+G1851's Region 2, the western region whose rainfall is closest to Hodgeman
+County's, for silt loam: **4.62 net gpm/ac, 0.7321 cm/day gross**. Kansas's peak
+demand is higher than western Nebraska's, so this understates what a Kansas
+well needs, and like Nebraska's it is a *minimum*: many real wells exceed it, so
+modelled stress is if anything overstated. A 2008 standard also captures no
+aquifer decline since.
+
+**Allocation cap: none, at either point -- a sourced finding, not a gap.** The
+cap is taken from the district that contains node 1's stratum point, where this
+model already takes its weather and soil. `ne_irrigated` lies in the **Lower
+Loup NRD**, which meters use and limits *new* irrigated acres but sets no
+per-acre pumping allocation. `ks_irrigated` lies in Hodgeman County, **outside
+every Kansas GMD** since 1988, so no LEMA applies; the Pawnee Valley IGUCA
+limits new appropriations, not seasonal pumping on existing rights. The caps
+that do bind -- Upper Republican NRD (62.5 in over five years), Lower Republican
+NRD (45 in over five years), North Platte NRD, Sheridan 6 LEMA (55 in over
+2023-2027), the GMD 4 district-wide LEMA -- lie far west of both points. One
+production-weighted point cannot represent a stratum that spans several
+regimes, which is the same limitation as one point per region. The cap code is
+built and tested all the same, with a synthetic cap.
+
+**Both limits are applied, unchanged, to every baseline year.** The baseline
+answers "what would each of 1995-2024 have yielded under today's limits and
+today's wells", which is the right comparison for a present-day anomaly. That
+the real rules and wells differed over those years is stated, not modelled.
+
+**Whether a limit bound is decided by counterfactual, not by counting days.**
+Each irrigated region is run a second time with the limits removed, and a
+season counts as limit-bound when the limits cost it more than 1% of that
+unlimited yield; the exact loss is reported beside the verdict. The obvious
+alternative -- counting days the well ran flat out while the crop was stressed
+-- does not work here: WOFOST's maize is already short of water at the 50%
+depletion trigger, so that happens in nearly every season even with unlimited
+water. The counterfactual is the only extra run this model makes at run time,
+and only for the two irrigated regions.
+
+**What the limits do, measured over 1995-2024.** The ceiling costs more than 1%
+of yield in **22 of 30** Nebraska years and **all 30** Kansas years, and more
+than 5% in 10 and 19; the worst years are the droughts, 2012 (NE -36.5%, KS
+-28.0%), 2002 (NE -31.2%) and 2011 (KS -36.8%). That is far more often than
+G1851's nine-years-in-ten design criterion suggests. The likely reason, not yet
+isolated: WOFOST's maize is already stressed at the 50% trigger (measured), and a
+controller that only starts watering there cannot get ahead of peak demand at
+the ceiling rate, where a real irrigator would start earlier. The baseline medians fell from 9,339 to 8,966
+kg/ha (NE) and 6,164 to 5,676 kg/ha (KS). **Still not modelled:** projected
+aquifer decline, historical changes to rules and wells, surface water, any
+rationing strategy (the controller simply irrigates until a cap is used up),
+and allocations in districts away from the stratum point.
 
 ### `planting_dates.csv`
 
@@ -451,12 +537,12 @@ there is no way to declare "a number, or empty". Two consequences:
 
 ## Limitations
 
-- **Irrigation is modelled as unlimited supply.** `ne_irrigated` and
-  `ks_irrigated` irrigate whenever soil moisture falls to their trigger, with no
-  aquifer decline, no allocation limit and no pumping-capacity ceiling in extreme
-  heat. Their drought protection is an **upper bound**: in a severe year the real
-  crop is short of water before the model's is. Constraining supply is the
-  natural next piece of work.
+- **Irrigation supply is limited by a design-minimum well, and nothing else.**
+  `ne_irrigated` and `ks_irrigated` irrigate within a pumping-capacity ceiling
+  from UNL G1851 -- Kansas's borrowed from Nebraska's standard -- and no
+  allocation cap, because none applies at either stratum point. Aquifer decline,
+  historical rule changes, surface water and allocations elsewhere in the
+  stratum are not modelled. See [Supply limits](#supply-limits).
 - **The other ten regions are still rainfed, and two of them are drier than the
   state they represent.** The eight unsplit states are genuinely near-dryland, so
   this is right for them. But `ne_rainfed` and `ks_rainfed` are now the rainfed
@@ -540,8 +626,11 @@ physiology, which is worse than not having one.
 ### Smaller items
 
 - Crop-reporting-district granularity instead of one point per state.
-- Constraining irrigation supply: an aquifer-decline or allocation limit, and a
-  pumping-capacity ceiling, so the irrigated strata stop being an upper bound.
+- Representing an irrigated stratum by several points or by district shares, so
+  the allocation caps that bind in the western NRDs and GMD 4 can enter; today
+  one production-weighted point sits where no cap applies.
+- A Kansas design-minimum well capacity, if K-State publishes one, to replace
+  the ceiling borrowed from Nebraska's G1851.
 - Soybean and wheat bundles, which would reuse the same machinery with a
   different crop and parameter set.
 
@@ -555,8 +644,8 @@ case exactly, and an unknown `region_key` failing loudly -- in every one of the
 five committed tables, not just the first one checked.
 
 Since the strata were added it also proves that the regime is declared rather
-than inferred, that an irrigated region really does get exactly one SM-triggered
-event and a rainfed one gets none, that each region's baseline was built under
+than inferred, that an irrigated region runs the irrigating engine and a
+rainfed one the plain engine, that each region's baseline was built under
 the regime its projection uses, that a single application is smaller than the
 profile's plant-available water (the cm/mm guard), and that **the eight unsplit
 states produce figures identical to the pre-change model** -- compared against
@@ -568,6 +657,25 @@ NASS operation-level reference of +105%, and **+57.4% for Nebraska** against
 +55%. Rebuilding the climatology and the baselines reproduced every one of the
 eight unsplit states' committed numbers exactly: 2,920 climatology rows and 240
 baseline years, zero differences.
+
+Since the supply limits were added (brief 0003) it also proves that the limits
+are declared, sourced and converted correctly; that **with the limits removed
+the irrigated strata reproduce brief 0002 exactly**, projection and all 60
+baseline years, against `regime_regression.json`, captured before any of it was
+built; that the ten rainfed regions are unchanged; that no day exceeds the
+ceiling and a synthetic cap is never exceeded; that a baseline built under
+different limits is refused before any simulation; and that a hot, dry
+flowering fortnight costs the irrigated strata more with the limits than
+without.
+
+**Measured, 2026-09-27: 485/485 checks pass.** The irrigated-minus-rainfed gap
+moved toward the NASS reference in both states: **Kansas +116.5%** (brief 0002,
+unlimited: +133.2%; NASS +105%) and **Nebraska +52.0%** (+57.4%; NASS +55%). In
+the 2026 sample both strata were capacity-bound: the ceiling cost Nebraska 3.43%
+and Kansas 7.17% of their unlimited yields. Under the injected flowering spell
+that rises to 7.16% and 15.51%, and the spell costs Kansas 1,132 kg/ha with the
+limits against 684 without. Rebuilding the baselines left all 300 rainfed
+values unchanged, and the climatology rebuilt byte-identical.
 
 ```bash
 uv run --no-project --python 3.12 --with pcse==6.0.13 \

@@ -249,7 +249,7 @@ corn-yield/
   Dockerfile              multi-stage: crop parameters pinned, then the model
   runner.py               the model
   soils.csv               per-region water-holding parameters
-  water_regime.csv        per-region water regime + irrigation parameters
+  water_regime.csv        per-region water regime, irrigation parameters, supply limits
   planting_dates.csv      per-region planting date and maturity class
   climatology.csv         per-region daily normals, 1995-2024 (4,380 rows)
   baseline_yields.csv     30 normal-weather yields per region (360 rows)
@@ -258,6 +258,7 @@ corn-yield/
   build_baselines.py      one-time baseline build (not in the image)
   check_yield.py          validation incl. real WOFOST runs (not in the image)
   unsplit_regression.json pre-change figures for the eight unsplit states
+  regime_regression.json  pre-brief-0003 figures, all twelve regions (AC-3/AC-4)
   sample_input.json       a real node 1 output: all twelve regions, 2026
   README.md
 ```
@@ -280,8 +281,10 @@ corn-yield/
   degenerates into `PP`: a 1.2% gap on the sample, and a yield anomaly that
   measures nothing. `soils.csv` sets realistic per-region values (9.6-17.6 cm)
   and `check_yield.py` asserts the water balance is live for every region.
-- **One simulation per region at run time.** The projection is the only WOFOST
-  run the model does; the thirty baseline runs are precomputed.
+- **One simulation per region at run time, plus one per irrigated region.** The
+  projection is the only WOFOST run for a rainfed region; an irrigated one is
+  also run with its supply limits removed, to report what they cost. The thirty
+  baseline runs (sixty for the irrigated strata) are precomputed.
 - **Two JSON outputs**, `corn_yield_snapshot` (the table node 3 reads) and
   `corn_yield_trajectory` (nested, with the daily DVS series). The CSV beside
   them is for off-platform use only.
@@ -300,21 +303,39 @@ corn-yield/
   of a region key, and `check_yield.py` asserts no such inference exists, because
   the moment node 1 splits a third state a spelling rule would silently start
   irrigating it.
-- **Irrigation is a StateEvent, not a different engine.** Both strata run
-  `Wofost72_WLP_FD`; the irrigated one adds an SM trigger. Running the irrigated
-  strata as `Wofost72_PP` would have removed all water response, and a drought
-  would then show no signal at all in exactly the regions where irrigation
-  matters.
-- **Three PCSE traps live here**, all verified against the pinned 6.0.13 and all
-  documented in the plan: the irrigate keyword is `amount`, not the
-  `irrigation_amount` in PCSE's own docstrings (which raises `TypeError`); a
-  campaign with `StateEvents` requires a trailing empty campaign; and that
-  trailing campaign makes the engine run past maturity, so the daily output must
-  be trimmed to days the crop was in the ground. The amount is in **cm**.
-- **The baseline must be built under the regime the projection uses**, or the
-  anomaly compares two different models. `build_baselines.py` imports the
-  agromanagement builder from `runner.py` rather than keeping a second copy, and
-  `baselines.meta.json` records each region's regime so the runner can check it.
+- **Irrigation is a controller inside the same engine, not a different engine.**
+  Both strata run `Wofost72_WLP_FD`; the irrigated one runs the subclass
+  `IrrigatedWofost72_WLP_FD`, whose `calc_rates` first calls an
+  `IrrigationController` (brief 0003; brief 0002 used a `StateEvent`). Running
+  the irrigated strata as `Wofost72_PP` would have removed all water response.
+  The controller is a **level** trigger -- it waters every day the profile is at
+  or below the trigger, at `min(application, pumping ceiling, cap remaining)` --
+  because a crossing trigger strands the crop under a low ceiling. With the
+  limits removed it reproduces brief 0002 exactly, which `check_yield.py` proves.
+- **PCSE traps here**, all verified against the pinned 6.0.13 and documented in
+  plans 0002 and 0003: the irrigate keyword is `amount`, not the
+  `irrigation_amount` in PCSE's own docstrings (which raises `TypeError`); the
+  amount is in **cm**; `_on_IRRIGATE` *sets* the day's rate, so a second signal
+  the same day replaces the first; engines refuse undeclared attributes, so the
+  controller is a declared trait; and the controller relies on two internals,
+  `calc_rates` running straight after the agromanager and `_send_signal`.
+  Re-verify on any PCSE upgrade. (0002's trailing-campaign trap is gone: no
+  campaign carries `StateEvents` any more.)
+- **Supply limits are sourced, and one of them is "none".** The pumping ceiling
+  is UNL G1851's minimum design capacity (NE 3.85 net gpm/ac; KS 4.62, borrowed
+  from G1851's Region 2 because K-State publishes no design minimum). The
+  allocation cap comes from the district containing node 1's stratum point, and
+  neither point has one: Lower Loup NRD sets none, and Hodgeman County KS lies
+  outside every GMD. "Limits bound" is decided by counterfactual yield (more
+  than 1% lost against the same season with the limits removed), because
+  WOFOST's maize is stressed at the 50% trigger even with unlimited water, which
+  makes a stressed-day count meaningless.
+- **The baseline must be built under the regime and limits the projection
+  uses**, or the anomaly compares two different models. `build_baselines.py`
+  imports the agromanagement builder and the engine factory (`model_for`) from
+  `runner.py` rather than keeping second copies, and `baselines.meta.json`
+  records each region's regime and irrigation parameters so the runner can
+  refuse a mismatch before simulating anything.
 
 ### Verified results (2026-09-19)
 
@@ -351,6 +372,17 @@ corn-yield/
   declared in `water_regime.csv`. Simulated irrigated-minus-rainfed gap:
   **ks +133.2%** against a NASS operation-level +105%, **ne +57.4%** against
   +55%. Checks went 83 -> **379/379**.
+- **Brief 0003 (irrigation supply limits, 2026-09-27):** a pumping-capacity
+  ceiling of 0.6101 (NE) and 0.7321 (KS) cm/day gross, and no allocation cap.
+  With the limits removed, all twelve projection rows and all 60 irrigated
+  baseline years reproduce brief 0002 exactly. Under the limits: gap **ks
+  +116.5%** (NASS +105%), **ne +52.0%** (+55%); irrigated baseline medians ne
+  9,339 -> 8,966, ks 6,164 -> 5,676 kg/ha; the ceiling costs more than 1% of
+  yield in 22/30 NE and 30/30 KS baseline years, and more than 5% in 10 and 19,
+  worst 2011/2012 at about -37%. Sample 2026: ne_irrigated +0.85% (limits cost
+  3.43%), ks_irrigated +8.66% (7.17%). The 300 rainfed baseline values, all ten
+  rainfed rows and the climatology are unchanged. Docker `--network none`
+  identical but `generated_at`; Modelfile `OK`. Checks went 379 -> **485/485**.
 - **Copilot review (PR #1):** four findings, all addressed -- an unpinned
   crop-parameter baseline, required-but-nullable output fields, silent gap
   filling, and a stale annotation. Checks went 54 -> **82/82**. Rebuilding the
@@ -360,23 +392,27 @@ corn-yield/
 
 ### Task list
 
-1. **Node 3 is now broken by design.** `ag-commodity-bundles/corn-price` keys
-   `production_weights.csv` and `yield_history.csv` on the old ten regions and
-   raises on an unknown `region_key`. Write and run its matching brief before the
-   four-step flow is expected to work end to end.
-2. Add the model on a Model Home stack from the branch subfolder URL and run it
-   with node 1's output (needs a signed-in human at the Auth0 login).
-3. After merge: register on Model Home from `main`, then re-register node 3, and
-   compose the flow.
-4. Follow-ups, detailed in the bundle README: constraining irrigation supply
-   (aquifer decline, allocation limits, pumping capacity), soils from
-   gNATSGO/SSURGO, a parameterised silking-heat overlay, and crop-reporting-
-   district granularity.
+1. ~~Re-key node 3 on the twelve regions.~~ Done: `ag-commodity-bundles` brief
+   0003 (PR #3, `7a07216`, 2026-09-21) re-keyed `production_weights.csv` and
+   `yield_history.csv` per stratum. The four-step flow is no longer broken by
+   design.
+2. Register on Model Home from `main`, re-register node 3, and compose the flow;
+   any stored flow input from before the split is stale (needs a signed-in human
+   at the Auth0 login).
+3. ~~Brief 0003, irrigation supply limits.~~ Implemented on
+   `feat/0003-irrigation-supply-limits`; after merge, re-register node 2 (region
+   keys unchanged, irrigated-strata figures moved).
+4. Other follow-ups, detailed in the bundle README: soils from gNATSGO/SSURGO, a
+   parameterised silking-heat overlay, crop-reporting-district granularity,
+   several points or district shares per irrigated stratum (so the caps that
+   bind further west can enter), and a K-State well-capacity source to replace
+   the borrowed Kansas ceiling.
 
 ## Task list
 
 1. ~~Create `modelhome/wofost-bundles` on GitHub and push `main`.~~ Done
    2026-09-19.
 2. Finish `corn-yield/` (brief 0001): see that bundle's task list above.
-3. Sibling repo still to come: `ag-commodity-bundles/corn-price/` (node 3),
-   which consumes this bundle's `yield_anomaly_pct` and `yield_percentile_rank`.
+3. ~~Sibling repo `ag-commodity-bundles/corn-price/` (node 3), which consumes
+   this bundle's `yield_anomaly_pct` and `yield_percentile_rank`.~~ Built, and
+   re-keyed on the twelve regions by its brief 0003.

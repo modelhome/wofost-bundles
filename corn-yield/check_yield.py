@@ -16,7 +16,9 @@ The bundle's claims are modelling claims, so the checks are too:
 - a gap in the upstream series fails rather than being filled with normals;
 - every output field the Modelfile declares required is actually never null;
 - the baseline and the runtime use the same pinned crop parameters;
-- no yield figure carries an undocumented overlay (AC-7).
+- no yield figure carries an undocumented overlay (AC-7);
+- the irrigated strata's supply limits are sourced, respected and auditable,
+  and with the limits removed they reproduce brief 0002 exactly (brief 0003).
 
 Run from the repo root, after a model run:
 
@@ -219,7 +221,7 @@ def check_anomaly_responds(sample_path, output):
         result = run_model(perturbed_path, tmp / "trajectory.json")
         check("the perturbed run succeeded", result.returncode == 0, result.stderr[-300:])
         if result.returncode != 0:
-            return
+            return None
         hot = json.loads(result.stdout)
 
     before = {row["region_key"]: row for row in output["rows"]}
@@ -241,6 +243,7 @@ def check_anomaly_responds(sample_path, output):
         check(f"{key}: the percentile rank falls",
               row["yield_percentile_rank"] <= base["yield_percentile_rank"],
               f"{base['yield_percentile_rank']} -> {row['yield_percentile_rank']}")
+    return hot
 
 
 # --- AC-7: the stress windows, hand-worked -----------------------------------
@@ -357,6 +360,26 @@ def check_schema_honesty(output):
     check("no override input can suppress the anomaly",
           "planting_date" not in definition["inputs"][0]["schema"].get("properties", {}))
 
+    # Brief 0003 AC-10: the supply limits and what they did are in the metadata,
+    # additively -- the row schema above is unchanged.
+    season_keys = {"applied_gross_cm", "irrigation_days", "max_daily_gross_cm",
+                   "days_at_capacity_ceiling", "first_cap_reached_date",
+                   "yield_unlimited_kg_ha", "yield_loss_to_limits_pct", "limits_bound",
+                   "binding_limits"}
+    for key, block in sorted(output["metadata"]["water_regime"].items()):
+        if block["regime"] == "irrigated":
+            check(f"{key}: the metadata reports the limits in force and what the season "
+                  f"used", block["irrigation"] is not None and block["season"] is not None
+                  and season_keys <= set(block["season"])
+                  and block["limits_method"] and block["limits_source"],
+                  str(sorted(season_keys - set(block["season"] or {}))))
+        else:
+            check(f"{key}: a rainfed region reports no irrigation",
+                  block["irrigation"] is None and block["season"] is None)
+    check("the snapshot columns are unchanged by brief 0003",
+          output["columns"] == runner.SNAPSHOT_COLUMNS
+          and all(set(row) == set(runner.SNAPSHOT_COLUMNS) for row in output["rows"]))
+
 
 def check_crop_parameter_pin(output):
     print("the baseline and the runtime use the same crop parameters")
@@ -460,6 +483,8 @@ def check_tables(output):
 # --- AC-2/AC-5: the water regime ---------------------------------------------
 
 UNSPLIT_REGRESSION_PATH = HERE / "unsplit_regression.json"
+REGIME_REGRESSION_PATH = HERE / "regime_regression.json"
+IRRIGATED_KEYS = ("ne_irrigated", "ks_irrigated")
 
 
 def check_regime_table(output):
@@ -499,74 +524,159 @@ def check_regime_table(output):
               soil["SMW"] < trigger < soil["SMFCF"], str(trigger))
 
     # AC-2's second sentence: the regime is a table lookup, never a guess at the
-    # spelling of a region key.
+    # spelling of a region key. Brief 0003 extends this to the supply limits,
+    # which live in the same table and are read through the same lookup.
     for name in ("runner.py", "build_baselines.py"):
         text = (HERE / name).read_text()
         offenders = [line.strip() for line in text.splitlines()
                      if ("_irrigated" in line or "_rainfed" in line)
                      and ("==" in line or "endswith" in line or "startswith" in line
                           or "in region_key" in line)]
-        check(f"{name} never infers the regime from the region key's spelling",
+        check(f"{name} never infers the regime or a limit from the region key's spelling",
               not offenders, "; ".join(offenders[:2]))
 
-    # The agromanagement a rainfed region gets must be the campaign this bundle
-    # used before brief 0002: no events at all.
-    soil = {name: float(soils["ia"][name]) for name in runner.SOIL_PARAMETERS}
-    rainfed = runner.agromanagement_for(
-        date(2026, 5, 4), "Grain_maize_203", 200, soil, regimes["ia"], "ia")
-    campaign = list(rainfed[0].values())[0]
-    check("a rainfed region is given no irrigation events at all",
+    # Every region, irrigated or not, gets the single sowing-to-maturity campaign
+    # this bundle used before brief 0002: no events at all. Irrigation is now
+    # applied from inside the engine, so the campaign no longer differs by
+    # regime (this assertion replaced 0002's two StateEvent assertions).
+    campaign = list(runner.agromanagement_for(
+        date(2026, 5, 4), "Grain_maize_203", 200)[0].values())[0]
+    check("every region is given a campaign with no events at all",
           campaign["StateEvents"] is None and campaign["TimedEvents"] is None)
 
-    soil_ks = {name: float(soils["ks_irrigated"][name]) for name in runner.SOIL_PARAMETERS}
-    irr = runner.agromanagement_for(
-        date(2026, 4, 22), "Grain_maize_205", 200, soil_ks,
-        regimes["ks_irrigated"], "ks_irrigated")
-    events = list(irr[0].values())[0]["StateEvents"]
-    check("an irrigated region is given one SM-triggered irrigation event",
-          events is not None and len(events) == 1
-          and events[0]["event_signal"] == "irrigate"
-          and events[0]["event_state"] == "SM")
-    check("the irrigation event fires on falling soil moisture, so it does not "
-          "re-fire on the rebound it just caused",
-          events[0]["zero_condition"] == "falling", events[0]["zero_condition"])
+    # A rainfed region runs the plain engine with no controller; an irrigated one
+    # runs the subclass, with the controller configured from its table row.
+    from pcse.base import ParameterProvider
+    from pcse.input import WOFOST72SiteDataProvider
+    from pcse.models import Wofost72_WLP_FD
+    crop = runner.crop_data_provider("Grain_maize_203", "ia")
+    document = json.loads((HERE / "sample_input.json").read_text())
+    grouped = runner.group_rows(document)
+    normals = runner.load_climatology()
+    meta = runner.load_baselines_meta()
+    for key in ("ia", "ks_irrigated"):
+        rows = grouped[key]
+        soil = {name: float(soils[key][name]) for name in runner.SOIL_PARAMETERS}
+        planting_day = date(2026, 5, 1)
+        series = runner.build_series(rows, normals, key, planting_day,
+                                     planting_day + timedelta(days=200), False)
+        a, b = runner.angstrom_for(meta, key)
+        provider = runner.build_provider(series, float(rows[0]["LAT"]), float(rows[0]["LON"]),
+                                         float(rows[0]["ELEV"]), a, b, "check")
+        crop.set_active_crop(runner.CROP_NAME, "Grain_maize_203")
+        parameters = ParameterProvider(cropdata=crop, soildata=soil,
+                                       sitedata=WOFOST72SiteDataProvider(WAV=float(soils[key]["WAV"])))
+        model, controller = runner.model_for(
+            parameters, provider, runner.agromanagement_for(planting_day, "Grain_maize_203", 200),
+            soil, regimes[key], key)
+        if regimes[key]["regime"] == "rainfed":
+            check(f"{key} (rainfed) runs the plain Wofost72_WLP_FD with no controller",
+                  type(model) is Wofost72_WLP_FD and controller is None, type(model).__name__)
+        else:
+            expected = runner.irrigation_parameters(soil, regimes[key], key)
+            check(f"{key} (irrigated) runs the irrigated subclass, its controller "
+                  f"configured from water_regime.csv",
+                  isinstance(model, runner.IrrigatedWofost72_WLP_FD)
+                  and controller is not None and controller.parameters == expected,
+                  f"{type(model).__name__}: {controller and controller.parameters}")
+            limitless = runner.unlimited(expected)
+            check(f"{key}: the unlimited counterfactual removes both limits and nothing else",
+                  limitless["allocation_cap_cm"] is None
+                  and limitless["capacity_cm_day_gross"] == expected["irrigation_amount_cm"]
+                  and {k: v for k, v in limitless.items()
+                       if k not in ("allocation_cap_cm", "capacity_cm_day_gross")}
+                  == {k: v for k, v in expected.items()
+                      if k not in ("allocation_cap_cm", "capacity_cm_day_gross")})
+
+
+def check_limits_table():
+    print("the supply limits are declared, sourced and converted correctly (brief 0003 AC-1)")
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    limit_columns = ("allocation_cap_cm", "capacity_net_gpm_ac", "capacity_cm_day_gross",
+                     "limits_method", "limits_source")
+    for key, row in sorted(regimes.items()):
+        check(f"{key}: the limit columns exist", all(c in row for c in limit_columns),
+              str([c for c in limit_columns if c not in row]))
+        if row["regime"] == "rainfed":
+            check(f"{key}: a rainfed row declares no limits",
+                  all(not (row.get(c) or "").strip() for c in limit_columns))
+            continue
+        # The ceiling is stored gross, cm/day; re-derive it from the recorded net
+        # gpm/ac so a hand edit to either cannot drift silently. 1 acre-inch is
+        # 27,154 US gal, so 1 gpm/ac pumped for 24 h is 1,440 / 27,154 in/day =
+        # 0.05303 in/day = 0.13470 cm/day; dividing by efficiency makes it gross.
+        cm_day_per_gpm_ac = 1440.0 / (43560.0 / 12.0 * 7.48052) * 2.54
+        net = float(row["capacity_net_gpm_ac"])
+        derived = net * cm_day_per_gpm_ac / float(row["efficiency"])
+        stored = float(row["capacity_cm_day_gross"])
+        check(f"{key}: {net} net gpm/ac converts to the stored {stored} cm/day gross",
+              abs(derived - stored) < 0.0001, f"derived {derived:.5f}")
+        check(f"{key}: the ceiling is below one application ({row['irrigation_amount_cm']} cm), "
+              f"so it is a real daily limit",
+              stored < float(row["irrigation_amount_cm"]), str(stored))
+        check(f"{key}: the limits carry their own method and source text",
+              bool(row["limits_method"].strip()) and bool(row["limits_source"].strip()))
+        if not (row["allocation_cap_cm"] or "").strip():
+            # An empty cap is a sourced "none", so the text must say so and name
+            # where the rule was looked up; an unexplained blank is a missing value.
+            check(f"{key}: an empty allocation cap is declared as a sourced 'none'",
+                  "Allocation cap: none" in row["limits_method"]
+                  and ("NRD" in row["limits_source"] or "GMD" in row["limits_source"]),
+                  row["limits_method"][-160:])
 
 
 def check_baseline_regime_matches(output):
-    print("each baseline was built under the regime its projection uses")
+    print("each baseline was built under the regime and limits its projection uses")
     regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
     per_region = output["metadata"]["baselines"].get("regions", {})
+    reported = output["metadata"]["water_regime"]
     for key, row in sorted(regimes.items()):
         recorded = per_region.get(key, {}).get("regime")
         # If these disagree the anomaly compares two different models, which is
         # the silent wrong answer this bundle refuses to produce.
         check(f"{key}: baseline regime '{recorded}' matches the run's '{row['regime']}'",
               recorded == row["regime"], f"{recorded} vs {row['regime']}")
+        built = per_region.get(key, {}).get("irrigation")
+        check(f"{key}: the baseline's recorded irrigation and limits match the run's",
+              key in reported and built == reported[key]["irrigation"],
+              f"{built} vs {reported.get(key, {}).get('irrigation')}")
 
 
 def check_baseline_regime_mismatch_fails():
-    print("a baseline built under the wrong regime fails before any projection runs")
+    print("a baseline built under the wrong regime or limits fails before any projection runs")
     regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    soils = runner.read_csv_keyed(runner.SOILS_PATH)
     real_meta = runner.load_baselines_meta()
     keys = sorted(regimes)
 
     # The real pair must pass, or the check below proves nothing.
     try:
-        runner.check_baseline_regimes(regimes, real_meta, keys)
+        runner.check_baseline_regimes(regimes, soils, real_meta, keys)
         check("the committed baseline and regime table agree", True)
     except runner.RunError as exc:
         check("the committed baseline and regime table agree", False, str(exc)[:200])
 
+    def doctor(change):
+        return {"regions": {k: change(dict(v)) for k, v in real_meta.get("regions", {}).items()}}
+
+    def other_ceiling(region):
+        if region.get("irrigation"):
+            region["irrigation"] = dict(region["irrigation"], capacity_cm_day_gross=
+                                        region["irrigation"]["capacity_cm_day_gross"] * 2)
+        return region
+
     for scenario, doctored in (
             ("a region's baseline was built under the other regime",
-             {"regions": {k: dict(v, regime=("rainfed" if v.get("regime") == "irrigated"
-                                             else "irrigated"))
-                          for k, v in real_meta.get("regions", {}).items()}}),
+             doctor(lambda v: dict(v, regime=("rainfed" if v.get("regime") == "irrigated"
+                                              else "irrigated")))),
             ("the baseline predates water_regime.csv and records no regime",
-             {"regions": {k: {key: value for key, value in v.items() if key != "regime"}
-                          for k, v in real_meta.get("regions", {}).items()}})):
+             doctor(lambda v: {key: value for key, value in v.items() if key != "regime"})),
+            ("an irrigated baseline was built under a different pumping-capacity ceiling",
+             doctor(other_ceiling)),
+            ("the baseline predates brief 0003 and records no irrigation parameters",
+             doctor(lambda v: {key: value for key, value in v.items() if key != "irrigation"}))):
         try:
-            runner.check_baseline_regimes(regimes, doctored, keys)
+            runner.check_baseline_regimes(regimes, soils, doctored, keys)
         except runner.RunError as exc:
             message = str(exc)
             check(f"{scenario}: the run refuses", True)
@@ -601,12 +711,190 @@ def check_irrigation_gap(output):
         wet = irrigated["yield_projection_kg_ha"]
         dry = rainfed["yield_projection_kg_ha"]
         gap = (wet - dry) / dry * 100.0
+        # Brief 0003 AC-8: the gap before the supply limits, from the fixture
+        # captured at the base commit, printed beside the one after them.
+        before = json.loads(REGIME_REGRESSION_PATH.read_text())["rows"]
+        wet_0002 = before[f"{state}_irrigated"]["yield_projection_kg_ha"]
+        dry_0002 = before[f"{state}_rainfed"]["yield_projection_kg_ha"]
+        gap_0002 = (wet_0002 - dry_0002) / dry_0002 * 100.0
         print(f"        {state}: irrigated {wet:.0f} vs rainfed {dry:.0f} kg/ha, "
-              f"gap {gap:+.1f}% (NASS operation-level reference {reference[state]:+.0f}%)")
+              f"gap {gap:+.1f}% (unlimited supply, brief 0002: {gap_0002:+.1f}%; "
+              f"NASS operation-level reference {reference[state]:+.0f}%)")
         check(f"{state}: the simulated irrigated-minus-rainfed gap is positive",
               gap > 0, f"{gap:+.1f}%")
         check(f"{state}: the gap is within the documented 25-200% sanity band",
               25.0 <= gap <= 200.0, f"{gap:+.1f}%")
+
+
+def check_rainfed_regions_unchanged(output):
+    print("the ten rainfed regions are unchanged by the supply limits (brief 0003 AC-3)")
+    fixture = json.loads(REGIME_REGRESSION_PATH.read_text())
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    now = {row["region_key"]: row for row in output["rows"]}
+    rainfed = sorted(key for key, row in regimes.items() if row["regime"] == "rainfed")
+    check("ten regions are rainfed", len(rainfed) == 10, str(rainfed))
+    for key in rainfed:
+        expected = fixture["rows"][key]
+        row = now.get(key, {})
+        differences = [name for name, value in expected.items() if row.get(name) != value]
+        check(f"{key}: every figure is identical to the pre-0003 run",
+              not differences,
+              "; ".join(f"{n}: {expected[n]} -> {row.get(n)}" for n in differences[:3]))
+        check(f"{key}: no irrigation is reported for a rainfed region",
+              output["metadata"]["water_regime"][key]["season"] is None)
+
+
+def process_irrigated(key, regime_row, baselines=None):
+    """Run one irrigated region in-process with a given regime row."""
+    document = json.loads((HERE / "sample_input.json").read_text())
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    regimes[key] = regime_row
+    tables = {
+        "soils": runner.read_csv_keyed(runner.SOILS_PATH),
+        "planting": runner.read_csv_keyed(runner.PLANTING_PATH),
+        "regimes": regimes,
+        "normals": runner.load_climatology(),
+        "baselines": baselines or runner.load_baselines(),
+        "baselines_meta": runner.load_baselines_meta(),
+    }
+    settings = {"as_of": document["metadata"]["date"], "max_duration": 200,
+                "silking_window": runner.DEFAULT_SILKING_WINDOW,
+                "frost_windows": runner.DEFAULT_FROST_WINDOWS}
+    snapshot, _, season = runner.process_region(
+        key, runner.group_rows(document)[key], tables, settings, document)
+    return snapshot, season
+
+
+def check_limits_off_reproduces_0002(output):
+    print("with the limits removed, the irrigated strata reproduce brief 0002 exactly "
+          "(brief 0003 AC-4)")
+    fixture = json.loads(REGIME_REGRESSION_PATH.read_text())
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    for key in IRRIGATED_KEYS:
+        # Limits non-binding: the ceiling at the application depth, no cap. The
+        # 0002 baseline distribution is restored too, so every field -- baseline
+        # median and percentile included -- is comparable.
+        limitless = dict(regimes[key], allocation_cap_cm="",
+                         capacity_cm_day_gross=regimes[key]["irrigation_amount_cm"])
+        old_distribution = runner.load_baselines()
+        old_distribution[key] = sorted(
+            float(value) for value in fixture["irrigated_baseline_yields_kg_ha"][key].values())
+        snapshot, _ = process_irrigated(key, limitless, old_distribution)
+        expected = fixture["rows"][key]
+        differences = [name for name, value in expected.items() if snapshot.get(name) != value]
+        check(f"{key}: the projection with the limits removed is identical to brief 0002",
+              not differences,
+              "; ".join(f"{n}: {expected[n]} -> {snapshot.get(n)}" for n in differences[:3]))
+        # The counterfactual the delivered run reports is that same unlimited run.
+        season = output["metadata"]["water_regime"][key]["season"]
+        check(f"{key}: the delivered run's unlimited-supply counterfactual is brief 0002's "
+              f"yield ({expected['yield_projection_kg_ha']} kg/ha)",
+              season["yield_unlimited_kg_ha"] == expected["yield_projection_kg_ha"],
+              str(season["yield_unlimited_kg_ha"]))
+        # And each baseline year's unlimited counterfactual is 0002's committed value.
+        by_year = runner.load_baselines_meta()["regions"][key]["irrigation_binding"]["by_year"]
+        old = fixture["irrigated_baseline_yields_kg_ha"][key]
+        mismatched = [year for year, value in old.items()
+                      if by_year.get(year, {}).get("yield_unlimited_kg_ha") != float(value)]
+        check(f"{key}: all 30 baseline years with the limits removed equal brief 0002's",
+              len(old) == 30 and not mismatched, str(mismatched[:5]))
+
+
+def check_limits_respected(output):
+    print("no day exceeds the ceiling and no season exceeds the cap (brief 0003 AC-5)")
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    meta = runner.load_baselines_meta()
+    for key in IRRIGATED_KEYS:
+        ceiling = float(regimes[key]["capacity_cm_day_gross"])
+        cap = regimes[key]["allocation_cap_cm"]
+        seasons = {"projection": output["metadata"]["water_regime"][key]["season"]}
+        seasons.update(meta["regions"][key]["irrigation_binding"]["by_year"])
+        over = [label for label, season in seasons.items()
+                if season["max_daily_gross_cm"] > ceiling + 1e-9]
+        check(f"{key}: no day of the projection or of 30 baseline seasons applies more than "
+              f"the {ceiling} cm/day ceiling", not over and len(seasons) == 31, str(over[:5]))
+        if cap:
+            over_cap = [label for label, season in seasons.items()
+                        if season["applied_gross_cm"] > float(cap) + 1e-9]
+            check(f"{key}: no season applies more than the {cap} cm cap", not over_cap,
+                  str(over_cap[:5]))
+
+    # Under D-1 no delivered region has a cap, so the cap path is proven with a
+    # synthetic one small enough to bind this season.
+    key = "ks_irrigated"
+    synthetic_cap = 10.0
+    _, season = process_irrigated(key, dict(regimes[key], allocation_cap_cm=str(synthetic_cap)))
+    check(f"a synthetic {synthetic_cap} cm cap is never exceeded "
+          f"(applied {season['applied_gross_cm']} cm)",
+          season["applied_gross_cm"] <= synthetic_cap + 1e-9, str(season["applied_gross_cm"]))
+    check("the date the synthetic cap was reached is reported",
+          season["first_cap_reached_date"] is not None, str(season))
+    check("the synthetic cap is named among the limits that bound",
+          "allocation_cap" in season["binding_limits"], str(season["binding_limits"]))
+
+
+def check_limit_binding_years():
+    print("how often the limits bound over the baseline years is recorded "
+          "(brief 0003 AC-7)")
+    meta = runner.load_baselines_meta()
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    for key in IRRIGATED_KEYS:
+        binding = meta["regions"][key].get("irrigation_binding") or {}
+        print(f"        {key}: limits cost > {binding.get('binding_threshold_loss_pct')}% of yield "
+              f"in {binding.get('years_limits_bound')}/{binding.get('years')} years "
+              f"(capacity {binding.get('years_capacity_bound')}, cap "
+              f"{binding.get('years_cap_bound')}); > 5% in {binding.get('years_loss_over_5pct')}; "
+              f"median loss {binding.get('yield_loss_to_limits_pct_median')}%, max "
+              f"{binding.get('yield_loss_to_limits_pct_max')}%; median applied "
+              f"{binding.get('applied_gross_cm_median')} cm")
+        check(f"{key}: the binding counts are recorded for all 30 years",
+              binding.get("years") == 30 and len(binding.get("by_year", {})) == 30
+              and binding.get("years_limits_bound") is not None)
+        # A cap that is a sourced "none" can never bind; if it did, the counts
+        # would be describing a limit that does not exist.
+        if not regimes[key]["allocation_cap_cm"]:
+            check(f"{key}: with no allocation cap declared, the cap never binds",
+                  binding.get("years_cap_bound") == 0, str(binding.get("years_cap_bound")))
+    rainfed = [key for key, region in meta["regions"].items()
+               if region.get("regime") == "rainfed" and region.get("irrigation_binding")]
+    check("no rainfed region records irrigation binding", not rainfed, str(rainfed))
+
+
+def check_capacity_stress(output, hot):
+    print("a hot, dry flowering fortnight costs more with the limits than without "
+          "(brief 0003 AC-9)")
+    for key in IRRIGATED_KEYS:
+        base_row = next(row for row in output["rows"] if row["region_key"] == key)
+        hot_row = next(row for row in hot["rows"] if row["region_key"] == key)
+        base = output["metadata"]["water_regime"][key]["season"]
+        spell = hot["metadata"]["water_regime"][key]["season"]
+        limited_loss = base_row["yield_projection_kg_ha"] - hot_row["yield_projection_kg_ha"]
+        unlimited_loss = base["yield_unlimited_kg_ha"] - spell["yield_unlimited_kg_ha"]
+        print(f"        {key}: the spell costs {limited_loss:.0f} kg/ha with the limits, "
+              f"{unlimited_loss:.0f} kg/ha without; the limits cost "
+              f"{base['yield_loss_to_limits_pct']}% -> {spell['yield_loss_to_limits_pct']}%")
+        check(f"{key}: the spell costs more yield with the limits than without them",
+              limited_loss > unlimited_loss, f"{limited_loss:.0f} vs {unlimited_loss:.0f}")
+        check(f"{key}: under the spell the metadata names the pumping capacity as binding",
+              spell["limits_bound"] and "pumping_capacity" in spell["binding_limits"],
+              str(spell))
+
+
+def check_malformed_limit_fails():
+    print("a malformed supply limit fails loudly, naming the row (brief 0003 AC-11)")
+    regimes = runner.read_csv_keyed(runner.WATER_REGIME_PATH)
+    key = "ne_irrigated"
+    for column, value in (("capacity_cm_day_gross", "-0.5"), ("capacity_cm_day_gross", ""),
+                          ("allocation_cap_cm", "none")):
+        try:
+            process_irrigated(key, dict(regimes[key], **{column: value}))
+        except runner.RunError as exc:
+            message = str(exc)
+            check(f"{column}={value!r} raises, naming water_regime.csv, the region and the column",
+                  "water_regime.csv" in message and key in message and column in message,
+                  message[:160])
+        else:
+            check(f"{column}={value!r} raises", False, "the run completed")
 
 
 def check_unsplit_regions_unchanged():
@@ -723,10 +1011,16 @@ def main():
     check_wofost_run(output)
     check_tables(output)
     check_regime_table(output)
+    check_limits_table()
     check_baseline_regime_matches(output)
     check_baseline_regime_mismatch_fails()
     check_irrigation_gap(output)
     check_unsplit_regions_unchanged()
+    check_rainfed_regions_unchanged(output)
+    check_limits_off_reproduces_0002(output)
+    check_limits_respected(output)
+    check_limit_binding_years()
+    check_malformed_limit_fails()
     check_units(output)
     check_percentile_rank()
     check_stress_windows()
@@ -734,7 +1028,9 @@ def main():
     check_schema_honesty(output)
     check_crop_parameter_pin(output)
     check_water_limitation(sample_path)
-    check_anomaly_responds(sample_path, output)
+    hot = check_anomaly_responds(sample_path, output)
+    if hot is not None:
+        check_capacity_stress(output, hot)
     check_unknown_region_fails(sample_path)
     check_every_table_fails_loudly(sample_path)
     check_gap_fails(sample_path)

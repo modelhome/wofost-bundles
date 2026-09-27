@@ -21,13 +21,15 @@ args = ["{input:crop_weather_daily}", "{output:corn_yield_trajectory}"]
 # the simulated season that was.
 determinism = "deterministic"
 expected_runtime = "seconds"
-validity_domain = "US corn regions, in season. One WOFOST run per region on the upstream weather, one representative point, soil and planting date per region, so values describe a region's corn area, not one field. Water regime is declared per region: rainfed for the eight unsplit states and the two rainfed strata, soil-moisture-triggered irrigation for ne_irrigated and ks_irrigated, whose modelled supply has no aquifer decline, allocation limit or pumping ceiling, making their drought protection an upper bound. Absolute yields are uncalibrated; the anomaly and percentile are the signal. See the README."
-not_for = "Field-level agronomic decisions (these are state-scale representative points, not your farm), official yield forecasts (use USDA NASS), or reading yield_projection_bu_acre as a prediction of the USDA number -- it is an uncalibrated model yield, not a calibrated forecast. Off-season output is valid but quiet; the signal is most meaningful from about April to October."
-provenance = "Crop model: PCSE/WOFOST 6.0.13 (Wofost72_WLP_FD). Maize parameters: ajwdewit/WOFOST_crop_parameters at a pinned commit. Weather: the upstream US Corn Crop Weather model. Climatology and the 30-year baseline: Open-Meteo ERA5 1995-2024 (CC BY 4.0). Planting dates: USDA NASS Handbook 628. Soil: texture-class parameters. Irrigation: UNL NebGuide G1850 and K-State L915."
+validity_domain = "US corn regions, in season. One WOFOST run per region on the upstream weather, one representative point, soil and planting date per region, so values describe a region's corn area, not one field. Water regime per region: rainfed for eight states and two rainfed strata; ne_irrigated and ks_irrigated irrigate on soil moisture within a design-minimum pumping ceiling (no allocation applies at their points), so a hot dry spell can outrun the well. Yields are uncalibrated; the anomaly and percentile are the signal."
+not_for = "Field-level agronomic decisions (these are state-scale representative points, not your farm), official yield forecasts (use USDA NASS), or reading yield_projection_bu_acre as a prediction of the USDA number -- it is an uncalibrated model yield, not a calibrated forecast. Nor as a forecast of any one irrigator's water supply: the pumping ceiling is an extension design minimum, Kansas's borrowed from Nebraska, and aquifer decline and district allocations away from the stratum point are not modelled. Off-season output is valid but quiet; the signal is most meaningful from about April to October."
+provenance = "Crop model: PCSE/WOFOST 6.0.13 (Wofost72_WLP_FD). Maize parameters: ajwdewit/WOFOST_crop_parameters at a pinned commit. Weather: the upstream US Corn Crop Weather model. Climatology and the 30-year baseline: Open-Meteo ERA5 1995-2024 (CC BY 4.0). Planting dates: USDA NASS Handbook 628. Soil: texture-class parameters. Irrigation: UNL NebGuide G1850, K-State L915; pumping ceiling: UNL G1851."
 
 [resources]
-# One WOFOST run per region over ~200 simulated days, plus reading three small
-# committed tables. The 30-year baseline is precomputed, not run here.
+# One WOFOST run per region over ~200 simulated days, plus one more for each
+# irrigated region (the same season with its supply limits removed, to report
+# what they cost), plus reading small committed tables. The 30-year baseline is
+# precomputed, not run here.
 memory = "512Mi"
 cpu = "1"
 
