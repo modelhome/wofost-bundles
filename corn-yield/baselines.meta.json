@@ -7,7 +7,7 @@
   "max_duration_days": 200,
   "source": "Open-Meteo archive (archive-api.open-meteo.com/v1/archive, models=era5), ERA5 reanalysis. Weather data by Open-Meteo.com, CC BY 4.0.",
   "method": "One Wofost72_WLP_FD run per year of 1995-2024 on that year's real daily ERA5 weather, with the same soil, planting date, variety and engine the runner uses for its projection. Real years are used rather than a mean climatology because averaging destroys the structure of rainfall, which is what the water balance responds to. The baseline is the median of these yields; the percentile rank is the share of them below the projection.",
-  "built_at": "2026-09-21T21:10:18+00:00",
+  "built_at": "2026-09-27T07:54:37+00:00",
   "regions": {
     "ia": {
       "state": "IA",
@@ -21,6 +21,8 @@
       "planting_date": "05-04",
       "variety_name": "Grain_maize_203",
       "regime": "rainfed",
+      "irrigation": null,
+      "irrigation_binding": null,
       "angstrom_a": 0.1883,
       "angstrom_b": 0.5888,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -37,6 +39,8 @@
       "planting_date": "05-04",
       "variety_name": "Grain_maize_204",
       "regime": "rainfed",
+      "irrigation": null,
+      "irrigation_binding": null,
       "angstrom_a": 0.1697,
       "angstrom_b": 0.5924,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -53,6 +57,8 @@
       "planting_date": "05-06",
       "variety_name": "Grain_maize_201",
       "regime": "rainfed",
+      "irrigation": null,
+      "irrigation_binding": null,
       "angstrom_a": 0.2065,
       "angstrom_b": 0.5762,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -60,15 +66,410 @@
     "ne_irrigated": {
       "state": "NE",
       "n_years": 30,
-      "median_kg_ha": 9339.2,
-      "mean_kg_ha": 9368.7,
-      "p10_kg_ha": 8091.8,
-      "p90_kg_ha": 10585.9,
-      "min_kg_ha": 7366.1,
+      "median_kg_ha": 8965.8,
+      "mean_kg_ha": 8878.3,
+      "p10_kg_ha": 7438.4,
+      "p90_kg_ha": 10267.1,
+      "min_kg_ha": 4680.6,
       "max_kg_ha": 12176.2,
       "planting_date": "05-03",
       "variety_name": "Grain_maize_203",
       "regime": "irrigated",
+      "irrigation": {
+        "trigger_sm": 0.22,
+        "irrigation_amount_cm": 2.54,
+        "efficiency": 0.85,
+        "capacity_cm_day_gross": 0.6101,
+        "allocation_cap_cm": null
+      },
+      "irrigation_binding": {
+        "years": 30,
+        "binding_threshold_loss_pct": 1.0,
+        "years_limits_bound": 22,
+        "years_capacity_bound": 22,
+        "years_cap_bound": 0,
+        "years_loss_over_5pct": 10,
+        "yield_loss_to_limits_pct_median": 2.51,
+        "yield_loss_to_limits_pct_max": 36.46,
+        "applied_gross_cm_median": 25.62,
+        "applied_gross_cm_max": 44.54,
+        "by_year": {
+          "1995": {
+            "applied_gross_cm": 29.2848,
+            "irrigation_days": 48,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 48,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 8418.3,
+            "yield_loss_to_limits_pct": 4.02,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "1996": {
+            "applied_gross_cm": 4.2707,
+            "irrigation_days": 7,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 7,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 10675.0,
+            "yield_loss_to_limits_pct": 0.1,
+            "limits_bound": false,
+            "binding_limits": []
+          },
+          "1997": {
+            "applied_gross_cm": 33.5555,
+            "irrigation_days": 55,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 55,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 9534.9,
+            "yield_loss_to_limits_pct": 2.09,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "1998": {
+            "applied_gross_cm": 19.5232,
+            "irrigation_days": 32,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 32,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 8956.1,
+            "yield_loss_to_limits_pct": 2.5,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "1999": {
+            "applied_gross_cm": 6.7111,
+            "irrigation_days": 11,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 11,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 9552.1,
+            "yield_loss_to_limits_pct": 0.44,
+            "limits_bound": false,
+            "binding_limits": []
+          },
+          "2000": {
+            "applied_gross_cm": 36.606,
+            "irrigation_days": 60,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 60,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 8916.6,
+            "yield_loss_to_limits_pct": 1.5,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2001": {
+            "applied_gross_cm": 30.505,
+            "irrigation_days": 50,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 50,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 8100.0,
+            "yield_loss_to_limits_pct": 4.12,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2002": {
+            "applied_gross_cm": 44.5373,
+            "irrigation_days": 73,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 73,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 7923.7,
+            "yield_loss_to_limits_pct": 31.24,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2003": {
+            "applied_gross_cm": 35.9959,
+            "irrigation_days": 59,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 59,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 9241.8,
+            "yield_loss_to_limits_pct": 12.15,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2004": {
+            "applied_gross_cm": 19.5232,
+            "irrigation_days": 32,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 32,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 12176.2,
+            "yield_loss_to_limits_pct": 0.0,
+            "limits_bound": false,
+            "binding_limits": []
+          },
+          "2005": {
+            "applied_gross_cm": 27.4545,
+            "irrigation_days": 45,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 45,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 8626.7,
+            "yield_loss_to_limits_pct": 13.21,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2006": {
+            "applied_gross_cm": 41.4868,
+            "irrigation_days": 68,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 68,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 8018.3,
+            "yield_loss_to_limits_pct": 12.73,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2007": {
+            "applied_gross_cm": 25.6242,
+            "irrigation_days": 42,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 42,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 8238.6,
+            "yield_loss_to_limits_pct": 4.1,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2008": {
+            "applied_gross_cm": 26.8444,
+            "irrigation_days": 44,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 44,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 9436.6,
+            "yield_loss_to_limits_pct": 2.5,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2009": {
+            "applied_gross_cm": 24.404,
+            "irrigation_days": 40,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 40,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 11205.9,
+            "yield_loss_to_limits_pct": -0.47,
+            "limits_bound": false,
+            "binding_limits": []
+          },
+          "2010": {
+            "applied_gross_cm": 19.5232,
+            "irrigation_days": 32,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 32,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 8831.9,
+            "yield_loss_to_limits_pct": 2.53,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2011": {
+            "applied_gross_cm": 10.3717,
+            "irrigation_days": 17,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 17,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 8544.6,
+            "yield_loss_to_limits_pct": 0.67,
+            "limits_bound": false,
+            "binding_limits": []
+          },
+          "2012": {
+            "applied_gross_cm": 38.4363,
+            "irrigation_days": 63,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 63,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 7366.1,
+            "yield_loss_to_limits_pct": 36.46,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2013": {
+            "applied_gross_cm": 25.6242,
+            "irrigation_days": 42,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 42,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 10020.3,
+            "yield_loss_to_limits_pct": 7.37,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2014": {
+            "applied_gross_cm": 25.6242,
+            "irrigation_days": 42,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 42,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 10387.2,
+            "yield_loss_to_limits_pct": 5.29,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2015": {
+            "applied_gross_cm": 7.3212,
+            "irrigation_days": 12,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 12,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 10028.2,
+            "yield_loss_to_limits_pct": 0.0,
+            "limits_bound": false,
+            "binding_limits": []
+          },
+          "2016": {
+            "applied_gross_cm": 24.404,
+            "irrigation_days": 40,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 40,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 9032.7,
+            "yield_loss_to_limits_pct": 0.62,
+            "limits_bound": false,
+            "binding_limits": []
+          },
+          "2017": {
+            "applied_gross_cm": 34.1656,
+            "irrigation_days": 56,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 56,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 9547.0,
+            "yield_loss_to_limits_pct": 7.11,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2018": {
+            "applied_gross_cm": 21.3535,
+            "irrigation_days": 35,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 35,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 10148.5,
+            "yield_loss_to_limits_pct": 2.31,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2019": {
+            "applied_gross_cm": 11.5919,
+            "irrigation_days": 19,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 19,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 9074.3,
+            "yield_loss_to_limits_pct": 1.31,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2020": {
+            "applied_gross_cm": 20.7434,
+            "irrigation_days": 34,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 34,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 10037.4,
+            "yield_loss_to_limits_pct": 1.78,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2021": {
+            "applied_gross_cm": 38.4363,
+            "irrigation_days": 63,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 63,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 10020.4,
+            "yield_loss_to_limits_pct": 6.27,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2022": {
+            "applied_gross_cm": 31.1151,
+            "irrigation_days": 51,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 51,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 8376.1,
+            "yield_loss_to_limits_pct": 6.69,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2023": {
+            "applied_gross_cm": 19.5232,
+            "irrigation_days": 32,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 32,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 10049.7,
+            "yield_loss_to_limits_pct": 0.91,
+            "limits_bound": false,
+            "binding_limits": []
+          },
+          "2024": {
+            "applied_gross_cm": 20.1333,
+            "irrigation_days": 33,
+            "max_daily_gross_cm": 0.6101,
+            "days_at_capacity_ceiling": 33,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 10576.0,
+            "yield_loss_to_limits_pct": 3.34,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          }
+        }
+      },
       "angstrom_a": 0.2326,
       "angstrom_b": 0.5392,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -85,6 +486,8 @@
       "planting_date": "05-03",
       "variety_name": "Grain_maize_203",
       "regime": "rainfed",
+      "irrigation": null,
+      "irrigation_binding": null,
       "angstrom_a": 0.2236,
       "angstrom_b": 0.5456,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -101,6 +504,8 @@
       "planting_date": "05-06",
       "variety_name": "Grain_maize_204",
       "regime": "rainfed",
+      "irrigation": null,
+      "irrigation_binding": null,
       "angstrom_a": 0.1558,
       "angstrom_b": 0.6065,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -117,6 +522,8 @@
       "planting_date": "05-10",
       "variety_name": "Grain_maize_201",
       "regime": "rainfed",
+      "irrigation": null,
+      "irrigation_binding": null,
       "angstrom_a": 0.2321,
       "angstrom_b": 0.5429,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -133,6 +540,8 @@
       "planting_date": "05-11",
       "variety_name": "Grain_maize_204",
       "regime": "rainfed",
+      "irrigation": null,
+      "irrigation_binding": null,
       "angstrom_a": 0.156,
       "angstrom_b": 0.6053,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -149,6 +558,8 @@
       "planting_date": "05-08",
       "variety_name": "Grain_maize_202",
       "regime": "rainfed",
+      "irrigation": null,
+      "irrigation_binding": null,
       "angstrom_a": 0.1733,
       "angstrom_b": 0.6009,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -156,15 +567,426 @@
     "ks_irrigated": {
       "state": "KS",
       "n_years": 30,
-      "median_kg_ha": 6164.3,
-      "mean_kg_ha": 6275.2,
-      "p10_kg_ha": 5022.0,
-      "p90_kg_ha": 7688.4,
-      "min_kg_ha": 3924.1,
-      "max_kg_ha": 8471.0,
+      "median_kg_ha": 5676.2,
+      "mean_kg_ha": 5718.9,
+      "p10_kg_ha": 4031.2,
+      "p90_kg_ha": 7537.5,
+      "min_kg_ha": 2723.5,
+      "max_kg_ha": 8352.3,
       "planting_date": "04-22",
       "variety_name": "Grain_maize_205",
       "regime": "irrigated",
+      "irrigation": {
+        "trigger_sm": 0.24,
+        "irrigation_amount_cm": 2.54,
+        "efficiency": 0.85,
+        "capacity_cm_day_gross": 0.7321,
+        "allocation_cap_cm": null
+      },
+      "irrigation_binding": {
+        "years": 30,
+        "binding_threshold_loss_pct": 1.0,
+        "years_limits_bound": 30,
+        "years_capacity_bound": 30,
+        "years_cap_bound": 0,
+        "years_loss_over_5pct": 19,
+        "yield_loss_to_limits_pct_median": 7.16,
+        "yield_loss_to_limits_pct_max": 36.76,
+        "applied_gross_cm_median": 38.8,
+        "applied_gross_cm_max": 62.96,
+        "by_year": {
+          "1995": {
+            "applied_gross_cm": 22.6951,
+            "irrigation_days": 31,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 31,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 6220.5,
+            "yield_loss_to_limits_pct": 4.43,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "1996": {
+            "applied_gross_cm": 21.963,
+            "irrigation_days": 30,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 30,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 7658.6,
+            "yield_loss_to_limits_pct": 1.82,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "1997": {
+            "applied_gross_cm": 38.0692,
+            "irrigation_days": 52,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 52,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 6882.4,
+            "yield_loss_to_limits_pct": 4.47,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "1998": {
+            "applied_gross_cm": 38.8013,
+            "irrigation_days": 53,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 53,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 6002.1,
+            "yield_loss_to_limits_pct": 4.82,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "1999": {
+            "applied_gross_cm": 30.0161,
+            "irrigation_days": 41,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 41,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 5733.8,
+            "yield_loss_to_limits_pct": 6.86,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2000": {
+            "applied_gross_cm": 43.1939,
+            "irrigation_days": 59,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 59,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 6918.5,
+            "yield_loss_to_limits_pct": 7.85,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2001": {
+            "applied_gross_cm": 39.5334,
+            "irrigation_days": 54,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 54,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 3924.1,
+            "yield_loss_to_limits_pct": 22.49,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2002": {
+            "applied_gross_cm": 54.9075,
+            "irrigation_days": 75,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 75,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 5773.5,
+            "yield_loss_to_limits_pct": 12.32,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2003": {
+            "applied_gross_cm": 39.5334,
+            "irrigation_days": 54,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 54,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 5089.7,
+            "yield_loss_to_limits_pct": 18.94,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2004": {
+            "applied_gross_cm": 27.0877,
+            "irrigation_days": 37,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 37,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 8471.0,
+            "yield_loss_to_limits_pct": 1.4,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2005": {
+            "applied_gross_cm": 47.5865,
+            "irrigation_days": 65,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 65,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 5877.6,
+            "yield_loss_to_limits_pct": 12.57,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2006": {
+            "applied_gross_cm": 43.1939,
+            "irrigation_days": 59,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 59,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 5247.1,
+            "yield_loss_to_limits_pct": 15.6,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2007": {
+            "applied_gross_cm": 34.4087,
+            "irrigation_days": 47,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 47,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 6133.6,
+            "yield_loss_to_limits_pct": 8.05,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2008": {
+            "applied_gross_cm": 27.8198,
+            "irrigation_days": 38,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 38,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 6195.0,
+            "yield_loss_to_limits_pct": 10.58,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2009": {
+            "applied_gross_cm": 41.7297,
+            "irrigation_days": 57,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 57,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 7561.6,
+            "yield_loss_to_limits_pct": 6.26,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2010": {
+            "applied_gross_cm": 39.5334,
+            "irrigation_days": 54,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 54,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 5886.8,
+            "yield_loss_to_limits_pct": 7.36,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2011": {
+            "applied_gross_cm": 62.9606,
+            "irrigation_days": 86,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 86,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 4307.0,
+            "yield_loss_to_limits_pct": 36.76,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2012": {
+            "applied_gross_cm": 62.2285,
+            "irrigation_days": 85,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 85,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 4412.9,
+            "yield_loss_to_limits_pct": 27.95,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2013": {
+            "applied_gross_cm": 40.9976,
+            "irrigation_days": 56,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 56,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 6544.9,
+            "yield_loss_to_limits_pct": 10.41,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2014": {
+            "applied_gross_cm": 27.0877,
+            "irrigation_days": 37,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 37,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 7991.8,
+            "yield_loss_to_limits_pct": 2.92,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2015": {
+            "applied_gross_cm": 26.3556,
+            "irrigation_days": 36,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 36,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 6391.2,
+            "yield_loss_to_limits_pct": 2.16,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2016": {
+            "applied_gross_cm": 33.6766,
+            "irrigation_days": 46,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 46,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 5838.2,
+            "yield_loss_to_limits_pct": 5.92,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2017": {
+            "applied_gross_cm": 39.5334,
+            "irrigation_days": 54,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 54,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 5235.2,
+            "yield_loss_to_limits_pct": 10.44,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2018": {
+            "applied_gross_cm": 38.8013,
+            "irrigation_days": 53,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 53,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 7532.4,
+            "yield_loss_to_limits_pct": 3.01,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2019": {
+            "applied_gross_cm": 33.6766,
+            "irrigation_days": 46,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 46,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 5548.9,
+            "yield_loss_to_limits_pct": 21.95,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2020": {
+            "applied_gross_cm": 39.5334,
+            "irrigation_days": 54,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 54,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 7367.2,
+            "yield_loss_to_limits_pct": 4.64,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2021": {
+            "applied_gross_cm": 38.0692,
+            "irrigation_days": 52,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 52,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 7956.9,
+            "yield_loss_to_limits_pct": 3.22,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2022": {
+            "applied_gross_cm": 38.0692,
+            "irrigation_days": 52,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 52,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 5339.0,
+            "yield_loss_to_limits_pct": 17.71,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2023": {
+            "applied_gross_cm": 13.1778,
+            "irrigation_days": 18,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 18,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 7143.8,
+            "yield_loss_to_limits_pct": 2.93,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          },
+          "2024": {
+            "applied_gross_cm": 40.9976,
+            "irrigation_days": 56,
+            "max_daily_gross_cm": 0.7321,
+            "days_at_capacity_ceiling": 56,
+            "first_cap_reached_date": null,
+            "yield_unlimited_kg_ha": 7071.8,
+            "yield_loss_to_limits_pct": 6.95,
+            "limits_bound": true,
+            "binding_limits": [
+              "pumping_capacity"
+            ]
+          }
+        }
+      },
       "angstrom_a": 0.2562,
       "angstrom_b": 0.514,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -181,6 +1003,8 @@
       "planting_date": "04-22",
       "variety_name": "Grain_maize_205",
       "regime": "rainfed",
+      "irrigation": null,
+      "irrigation_binding": null,
       "angstrom_a": 0.2099,
       "angstrom_b": 0.5506,
       "angstrom_source": "estimated from the 1995-2024 radiation series"
@@ -197,6 +1021,8 @@
       "planting_date": "04-18",
       "variety_name": "Grain_maize_205",
       "regime": "rainfed",
+      "irrigation": null,
+      "irrigation_binding": null,
       "angstrom_a": 0.1641,
       "angstrom_b": 0.5923,
       "angstrom_source": "estimated from the 1995-2024 radiation series"

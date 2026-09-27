@@ -62,7 +62,6 @@ from pathlib import Path
 from pcse.base import ParameterProvider
 from pcse.base.weather import WeatherDataContainer, WeatherDataProvider
 from pcse.input import YAMLCropDataProvider, WOFOST72SiteDataProvider
-from pcse.models import Wofost72_WLP_FD
 from pcse.util import reference_ET
 
 import build_climatology as clim
@@ -160,32 +159,82 @@ def build_provider(series, site, angstrom_a, angstrom_b):
 
 def run_year(observed, site, soil_row, planting_row, regime_row, year,
              angstrom_a, angstrom_b, crop_data):
-    """One historical season. Returns TWSO kg/ha, or None when the year is short."""
+    """
+    One historical season. Returns (TWSO kg/ha, irrigation summary or None for a
+    rainfed region), or (None, None) when the year is short.
+    """
     sowing = date(year, int(planting_row["planting_month"]), int(planting_row["planting_day"]))
     series = []
     for offset in range(MAX_DURATION + 1):
         day = sowing + timedelta(days=offset)
         values = observed.get(day.isoformat())
         if values is None:
-            return None
+            return None, None
         series.append((day, clim.to_pcse_row(values)))
 
     variety = planting_row["variety_name"]
     crop_data.set_active_crop(CROP_NAME, variety)
     soil = {name: float(soil_row[name]) for name in SOIL_PARAMETERS}
-    agromanagement = node2.agromanagement_for(
-        sowing, variety, MAX_DURATION, soil, regime_row, soil_row["region_key"])
+    region_key = soil_row["region_key"]
+    agromanagement = node2.agromanagement_for(sowing, variety, MAX_DURATION)
     parameters = ParameterProvider(
         cropdata=crop_data,
         soildata=soil,
         sitedata=WOFOST72SiteDataProvider(WAV=float(soil_row["WAV"])))
-    model = Wofost72_WLP_FD(
-        parameters, build_provider(series, site, angstrom_a, angstrom_b), agromanagement)
-    model.run_till_terminate()
-    summary = model.get_summary_output()
-    if not summary:
-        return None
-    return summary[0].get("TWSO")
+    # The same engine factory the runner uses, so an irrigated region's baseline
+    # runs under exactly the irrigation controller and supply limits its
+    # projection will (plan 0003, D-3).
+    provider = build_provider(series, site, angstrom_a, angstrom_b)
+
+    def grain_yield(unlimited_supply):
+        model, controller = node2.model_for(
+            parameters, provider, agromanagement, soil, regime_row, region_key,
+            unlimited_supply=unlimited_supply)
+        model.run_till_terminate()
+        summary = model.get_summary_output()
+        twso = summary[0].get("TWSO") if summary else None
+        return twso, (controller.summary() if controller is not None else None)
+
+    value, irrigation = grain_yield(unlimited_supply=False)
+    if value is None or irrigation is None:
+        return value, irrigation
+    # Irrigated only: the same season with the supply limits removed, so the
+    # baseline records what the limits cost each year (plan 0003, D-5 as revised).
+    unlimited_value, _ = grain_yield(unlimited_supply=True)
+    if unlimited_value is None:
+        return None, None
+    irrigation.update(node2.limits_effect(value, unlimited_value, irrigation))
+    return value, irrigation
+
+
+def binding_summary(seasons):
+    """
+    How often, and how much, the supply limits cost yield over the baseline years.
+
+    Committed evidence rather than a transient print: a limit that never binds
+    changes nothing, and that should be visible without rerunning the build. A
+    year is limit-bound when the limits cost it more than
+    runner.LIMIT_BINDING_LOSS_PCT of its unlimited-supply yield (plan 0003, D-5
+    as revised).
+    """
+    values = list(seasons.values())
+    applied = [season["applied_gross_cm"] for season in values]
+    losses = [season["yield_loss_to_limits_pct"] for season in values]
+    return {
+        "years": len(values),
+        "binding_threshold_loss_pct": node2.LIMIT_BINDING_LOSS_PCT,
+        "years_limits_bound": sum(1 for season in values if season["limits_bound"]),
+        "years_capacity_bound": sum(
+            1 for season in values if "pumping_capacity" in season["binding_limits"]),
+        "years_cap_bound": sum(
+            1 for season in values if "allocation_cap" in season["binding_limits"]),
+        "years_loss_over_5pct": sum(1 for loss in losses if loss > 5.0),
+        "yield_loss_to_limits_pct_median": round(statistics.median(losses), 2),
+        "yield_loss_to_limits_pct_max": round(max(losses), 2),
+        "applied_gross_cm_median": round(statistics.median(applied), 2),
+        "applied_gross_cm_max": round(max(applied), 2),
+        "by_year": {str(year): season for year, season in sorted(seasons.items())},
+    }
 
 
 def crop_parameters_commit(path):
@@ -238,13 +287,16 @@ def main():
         angstrom_a, angstrom_b, angstrom_source = angstrom_ab(observed, region["lat"])
 
         yields = []
+        seasons = {}  # year -> irrigation summary, irrigated regions only
         for year in range(clim.PERIOD_START.year, clim.PERIOD_END.year + 1):
-            value = run_year(observed, region, soils[key], planting[key], regimes[key],
-                             year, angstrom_a, angstrom_b, crop_data)
+            value, irrigation = run_year(observed, region, soils[key], planting[key],
+                                         regimes[key], year, angstrom_a, angstrom_b, crop_data)
             if value is None:
                 clim.log(f"  {key} {year}: incomplete season, skipped")
                 continue
             yields.append((year, round(value, 1)))
+            if irrigation is not None:
+                seasons[year] = irrigation
             rows.append({"region_key": key, "year": year, "yield_kg_ha": round(value, 1)})
 
         if len(yields) < 20:
@@ -267,6 +319,14 @@ def main():
             # Recorded per region so the runner can state, and check, that a
             # region's baseline was built under the same regime its projection uses.
             "regime": regimes[key]["regime"],
+            # The irrigation parameters and supply limits the baseline was built
+            # under (None for rainfed). The runner compares them with the current
+            # water_regime.csv before any projection and refuses a mismatch, as it
+            # does for the regime and the crop-parameter pin.
+            "irrigation": node2.irrigation_parameters(
+                {name: float(soils[key][name]) for name in SOIL_PARAMETERS},
+                regimes[key], key),
+            "irrigation_binding": binding_summary(seasons) if seasons else None,
             "angstrom_a": angstrom_a,
             "angstrom_b": angstrom_b,
             "angstrom_source": angstrom_source,

@@ -16,8 +16,10 @@ For each region in that input it:
    a full season can be simulated mid-season;
 3. runs WOFOST once in water-limited mode on that spliced series (the
    projection), under the water regime water_regime.csv declares for that
-   region -- rainfed, or irrigated with a soil-moisture-triggered schedule --
-   and compares it with the committed normal-weather distribution
+   region -- rainfed, or irrigated on soil moisture within a pumping-capacity
+   ceiling and any seasonal allocation cap, with one extra run per irrigated
+   region to report what those limits cost -- and compares it with the
+   committed normal-weather distribution
    in baseline_yields.csv -- the same model run over each of the last thirty
    years of real weather, precomputed because it never depends on the input;
 4. reports development stage, days to anthesis and maturity, the projected and
@@ -60,10 +62,12 @@ from pathlib import Path
 _REAL_STDOUT = sys.stdout
 sys.stdout = sys.stderr
 try:
+    from pcse import signals
     from pcse.base import ParameterProvider
     from pcse.base.weather import WeatherDataContainer, WeatherDataProvider
     from pcse.input import YAMLCropDataProvider, WOFOST72SiteDataProvider
     from pcse.models import Wofost72_WLP_FD
+    from pcse.traitlets import Instance
     from pcse.util import reference_ET
 finally:
     sys.stdout = _REAL_STDOUT
@@ -236,19 +240,21 @@ def check_crop_parameters_pin(baselines_meta):
     return actual
 
 
-def check_baseline_regimes(regimes, baselines_meta, region_keys):
+def check_baseline_regimes(regimes, soils, baselines_meta, region_keys):
     """
-    The baseline and the projection must use the same water regime.
+    The baseline and the projection must use the same water regime and limits.
 
     Exactly the failure check_crop_parameters_pin() exists to prevent, one field
     over. The anomaly is (projection - baseline) / baseline, so if a region's
     baseline distribution was built rainfed and its projection runs irrigated,
+    or was built with a different pumping-capacity ceiling or allocation cap,
     the percentage is comparing two different models while the metadata claims
     they match -- a silent wrong answer, which is worse than a failed run.
 
-    A baseline built before water_regime.csv existed records no regime at all.
-    That is a mismatch too: it cannot be assumed rainfed just because it is old.
-    Rebuild it with build_baselines.py rather than guessing.
+    A baseline built before water_regime.csv existed records no regime, and one
+    built before brief 0003 records no irrigation parameters. Both are
+    mismatches: an old baseline cannot be assumed to match just because it is
+    old. Rebuild it with build_baselines.py rather than guessing.
 
     Checked once, before any projection runs, so a mismatch costs no simulation.
     """
@@ -256,18 +262,27 @@ def check_baseline_regimes(regimes, baselines_meta, region_keys):
     mismatches = []
     for key in region_keys:
         regime_row = regimes.get(key)
-        if regime_row is None:
+        soil_row = soils.get(key)
+        if regime_row is None or soil_row is None:
             continue  # process_region raises on this, with a better message
+        built = recorded.get(key, {})
         declared = regime_row["regime"]
-        built_under = recorded.get(key, {}).get("regime")
-        if built_under != declared:
+        if built.get("regime") != declared:
             mismatches.append(
                 f"{key}: water_regime.csv says '{declared}', but baseline_yields.csv "
-                f"was built under {built_under!r}")
+                f"was built under {built.get('regime')!r}")
+            continue
+        soil = {name: float(soil_row[name]) for name in SOIL_PARAMETERS}
+        current = irrigation_parameters(soil, regime_row, key)
+        if "irrigation" not in built or built["irrigation"] != current:
+            mismatches.append(
+                f"{key}: water_regime.csv gives irrigation {current}, but baseline_yields.csv "
+                f"was built under {built.get('irrigation', 'no recorded irrigation parameters')}")
     if mismatches:
         raise RunError(
-            "the committed baseline was not built under the water regime this run "
-            "uses, so the yield anomaly would compare two different models:\n  "
+            "the committed baseline was not built under the water regime and supply "
+            "limits this run uses, so the yield anomaly would compare two different "
+            "models:\n  "
             + "\n  ".join(mismatches)
             + "\nRebuild the baseline with build_baselines.py against the current "
               "water_regime.csv.")
@@ -484,7 +499,7 @@ def irrigation_trigger_sm(soil, regime_row, region_key):
     The soil moisture at which an irrigated region waters, as a fraction.
 
     Extension irrigation scheduling is written in terms of *depletion* of
-    plant-available water, while PCSE's StateEvent fires on SM itself. The two
+    plant-available water, while the irrigation controller compares SM itself. The two
     meet here: at trigger_depletion_fraction of the available water gone,
 
         SM = SMW + (1 - depletion) x (SMFCF - SMW)
@@ -506,21 +521,22 @@ def irrigation_trigger_sm(soil, regime_row, region_key):
     return soil["SMW"] + (1.0 - depletion) * (soil["SMFCF"] - soil["SMW"])
 
 
-def agromanagement_for(planting_day, variety_name, max_duration, soil, regime_row, region_key):
+def agromanagement_for(planting_day, variety_name, max_duration):
     """
-    The PCSE agromanagement campaign for one region.
+    The PCSE agromanagement campaign for one region: sowing to maturity, no events.
 
-    A rainfed region gets exactly the campaign every region in this bundle used
-    before brief 0002: no events at all. An irrigated region gets the same
-    campaign plus one StateEvent that waters when the profile dries to its
-    trigger. The regime comes from the committed water_regime.csv row; nothing
-    here infers it from how the region key is spelled.
+    Every region gets exactly this, irrigated or not. Before brief 0003 an
+    irrigated region also carried a soil-moisture StateEvent, which PCSE only
+    accepts with a trailing empty campaign that kept the engine stepping past
+    maturity. Irrigation is now applied by IrrigationController from inside the
+    engine (see IrrigatedWofost72_WLP_FD), so the campaign no longer differs by
+    regime and that trailing campaign is gone.
 
     Shared with build_baselines.py on purpose. The baseline distribution and the
     projection must differ in nothing but weather, so they cannot be allowed to
     drift apart by maintaining two copies of this.
     """
-    campaign = {
+    return [{planting_day: {
         "CropCalendar": {
             "crop_name": CROP_NAME,
             "variety_name": variety_name,
@@ -532,67 +548,251 @@ def agromanagement_for(planting_day, variety_name, max_duration, soil, regime_ro
         },
         "TimedEvents": None,
         "StateEvents": None,
-    }
+    }}]
 
+
+def _positive_float(regime_row, column, region_key, allow_empty=False):
+    """One numeric water_regime.csv cell, validated. Empty -> None when allowed."""
+    raw = (regime_row.get(column) or "").strip()
+    if not raw and allow_empty:
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RunError(
+            f"water_regime.csv row for '{region_key}' is irrigated but has no usable "
+            f"{column}: {raw!r}") from exc
+    if value <= 0:
+        raise RunError(
+            f"water_regime.csv row for '{region_key}': {column} {value} must be positive.")
+    return value
+
+
+def irrigation_parameters(soil, regime_row, region_key):
+    """
+    Everything an irrigated region's controller needs, validated; None if rainfed.
+
+    The regime and every limit come from the committed water_regime.csv row;
+    nothing here infers them from how the region key is spelled. The same dict is
+    recorded per region in baselines.meta.json when the baseline is built and
+    compared with the current table before any projection runs, so a baseline
+    built under different limits is refused rather than silently compared with.
+    """
     regime = (regime_row.get("regime") or "").strip()
     if regime == "rainfed":
-        return [{planting_day: campaign}]
+        return None
     if regime != "irrigated":
         raise RunError(
             f"water_regime.csv row for '{region_key}' has regime '{regime}', which is "
             f"neither 'rainfed' nor 'irrigated'.")
 
-    try:
-        # CENTIMETRES, and GROSS. The irrigate signal takes `amount` in cm and the
-        # handler sets RIRR = amount x efficiency, so `amount` is the depth the
-        # system applies and efficiency decides how much of it reaches the soil.
-        # RIRR is documented cm/day (pcse/soil/classic_waterbalance.py:209,633;
-        # pcse/signals.py:177 says so too). PCSE's own agromanager docstring
-        # examples read as though the field were mm. Hence the column name, and
-        # hence water_regime.csv stating the net depth that follows from the pair.
-        amount_cm = float(regime_row["irrigation_amount_cm"])
-        efficiency = float(regime_row["efficiency"])
-    except (KeyError, TypeError, ValueError) as exc:
+    # CENTIMETRES, and GROSS. The irrigate signal takes `amount` in cm and the
+    # handler sets RIRR = amount x efficiency, so `amount` is the depth the
+    # system applies and efficiency decides how much of it reaches the soil.
+    # RIRR is documented cm/day (pcse/soil/classic_waterbalance.py:209,633;
+    # pcse/signals.py:177 says so too). PCSE's own agromanager docstring
+    # examples read as though the field were mm. Hence the column names.
+    amount_cm = _positive_float(regime_row, "irrigation_amount_cm", region_key)
+    efficiency = _positive_float(regime_row, "efficiency", region_key)
+    if efficiency > 1.0:
         raise RunError(
-            f"water_regime.csv row for '{region_key}' is irrigated but has no usable "
-            f"irrigation_amount_cm/efficiency: {exc}") from exc
-    if amount_cm <= 0 or not 0.0 < efficiency <= 1.0:
-        raise RunError(
-            f"water_regime.csv row for '{region_key}': irrigation_amount_cm {amount_cm} "
-            f"and efficiency {efficiency} must be positive, with efficiency at most 1.")
+            f"water_regime.csv row for '{region_key}': efficiency {efficiency} must be "
+            f"at most 1.")
+    # The pumping-capacity ceiling, gross cm/day, is required: an irrigated
+    # region with no declared ceiling would silently be unlimited again.
+    capacity_cm_day = _positive_float(regime_row, "capacity_cm_day_gross", region_key)
+    # The seasonal allocation cap, gross cm. Empty means the governing district
+    # sets no allocation at the stratum's point -- a sourced "none", cited in the
+    # row's limits_source, not a missing value.
+    cap_cm = _positive_float(regime_row, "allocation_cap_cm", region_key, allow_empty=True)
+    return {
+        "trigger_sm": round(irrigation_trigger_sm(soil, regime_row, region_key), 4),
+        "irrigation_amount_cm": amount_cm,
+        "efficiency": efficiency,
+        "capacity_cm_day_gross": capacity_cm_day,
+        "allocation_cap_cm": cap_cm,
+    }
 
-    trigger_sm = irrigation_trigger_sm(soil, regime_row, region_key)
-    campaign["StateEvents"] = [{
-        "event_signal": "irrigate",
-        "event_state": "SM",
-        # 'falling': fire as the profile dries THROUGH the trigger. With 'either'
-        # the same event would fire again on the way back up, right after the
-        # water was applied -- see pcse.agromanager.StateEventsDispatcher.
-        "zero_condition": "falling",
-        "name": f"soil-moisture irrigation ({region_key})",
-        "comment": "irrigation amounts in cm of water",
-        "events_table": [
-            # The keyword is 'amount', NOT 'irrigation_amount'. PCSE's handler is
-            # WaterbalanceFD._on_IRRIGATE(self, amount, efficiency) and the
-            # events_table values are splatted into it verbatim, so the name in
-            # every agromanager docstring example ('irrigation_amount') raises
-            # TypeError at the first trigger. pcse/signals.py:173 has the real one.
-            {round(trigger_sm, 4): {"amount": amount_cm, "efficiency": efficiency}}
-        ],
-    }]
-    # PCSE requires a trailing EMPTY campaign whenever a campaign carries
-    # StateEvents: unlike a crop calendar, a state event has no end date of its
-    # own, so AgroManager.end_date refuses to guess one and raises instead. The
-    # trailing date is the campaign's end, and it is the same crop_end_date the
-    # calendar already carries, so this adds a required declaration rather than
-    # changing when the run stops. Rainfed regions keep the single-campaign
-    # definition they have always had.
-    return [{planting_day: campaign}, {planting_day + timedelta(days=max_duration): None}]
+
+class IrrigationController:
+    """
+    Applies irrigation once a day, inside the supply limits water_regime.csv declares.
+
+    Rule, evaluated each day on the soil moisture the day's integration left:
+
+        if SM <= trigger and the season's cap is not used up:
+            apply min(irrigation_amount_cm, capacity_cm_day_gross, cap remaining), gross
+
+    It is a level trigger: it waters on every day the profile is at or below the
+    trigger, not only on the day it first drops through it. Brief 0002's
+    StateEvent fired only on that crossing. Under a low pumping capacity a
+    crossing trigger could fire once, fail to lift the profile back above the
+    trigger, and never fire again that season. With the limits non-binding the
+    two agree exactly: across all 60 irrigated baseline seasons and the sample
+    projection, 0002's profile rose back above the trigger the day after every
+    application (measured, plan 0003 step 3), and check_yield.py proves the
+    figures reproduce.
+
+    At most one application a day. PCSE's WaterbalanceFD._on_IRRIGATE *sets*
+    the day's irrigation rate rather than adding to it, so a second signal on the
+    same day would silently replace the first. The first observation, at the
+    start date, only records -- as PCSE's StateEventsDispatcher does -- so a
+    profile that begins below the trigger is not watered on day zero.
+    """
+
+    def __init__(self, parameters):
+        self.parameters = parameters
+        self.applied_gross_cm = 0.0
+        self.applications = {}      # day -> gross cm applied
+        self.at_ceiling = set()     # days the pumping capacity set the amount
+        self.first_cap_reached = None
+        self._observed = False
+
+    def step(self, engine, day):
+        soil_moisture = engine.get_variable("SM")
+        if not self._observed:
+            self._observed = True
+            return
+        p = self.parameters
+        if soil_moisture is None or soil_moisture > p["trigger_sm"]:
+            return
+        wanted = min(p["irrigation_amount_cm"], p["capacity_cm_day_gross"])
+        amount = wanted
+        if p["allocation_cap_cm"] is not None:
+            remaining = max(0.0, p["allocation_cap_cm"] - self.applied_gross_cm)
+            if remaining < wanted and self.first_cap_reached is None:
+                self.first_cap_reached = day
+            amount = min(wanted, remaining)
+        if amount <= 0.0:
+            return
+        if p["capacity_cm_day_gross"] < p["irrigation_amount_cm"] and amount == wanted:
+            self.at_ceiling.add(day)
+        # The keyword is 'amount', NOT 'irrigation_amount'. PCSE's handler is
+        # WaterbalanceFD._on_IRRIGATE(self, amount, efficiency) and the keywords
+        # are passed to it verbatim, so the name in every agromanager docstring
+        # example ('irrigation_amount') raises TypeError. pcse/signals.py:173
+        # has the real one.
+        engine._send_signal(signal=signals.irrigate, amount=amount,
+                            efficiency=p["efficiency"])
+        self.applied_gross_cm += amount
+        self.applications[day] = amount
+
+    def summary(self):
+        """
+        What the season used, as plain facts.
+
+        Deliberately not a "did a limit bind" verdict: running at the ceiling on
+        a day the crop was stressed happens in nearly every season even with
+        unlimited water, because WOFOST's maize is already short of water at the
+        50 percent depletion trigger. Whether a limit bound is decided by
+        comparing yields with and without the limits; see limits_effect().
+        """
+        return {
+            "applied_gross_cm": round(self.applied_gross_cm, 4),
+            "irrigation_days": len(self.applications),
+            "max_daily_gross_cm": round(max(self.applications.values(), default=0.0), 4),
+            "days_at_capacity_ceiling": len(self.at_ceiling),
+            "first_cap_reached_date": (
+                self.first_cap_reached.isoformat() if self.first_cap_reached else None),
+        }
+
+
+class IrrigatedWofost72_WLP_FD(Wofost72_WLP_FD):
+    """
+    Wofost72_WLP_FD with an IrrigationController run at the start of each rate step.
+
+    In the pinned PCSE 6.0.13, Engine._run integrates the states, calls the
+    agromanager (where a StateEvent would fire) and then calls calc_rates; the
+    constructor makes the same agromanager-then-calc_rates pair once. Running the
+    controller first thing in calc_rates therefore sees exactly the soil moisture
+    a StateEvent saw and irrigates in the same rate step, which is what lets the
+    limits-off case reproduce brief 0002 bit for bit. Both calc_rates and
+    _send_signal are PCSE internals: re-verify them on any PCSE upgrade.
+    """
+
+    # Declared as a trait because PCSE engines refuse assignment to any attribute
+    # they do not declare (pcse/base/engine.py, BaseEngine.__setattr__).
+    irrigation = Instance(IrrigationController)
+
+    def __init__(self, parameterprovider, weatherdataprovider, agromanagement, controller):
+        self.irrigation = controller
+        super().__init__(parameterprovider, weatherdataprovider, agromanagement)
+
+    def calc_rates(self, day, drv):
+        self.irrigation.step(self, day)
+        super().calc_rates(day, drv)
+
+
+def unlimited(irrigation):
+    """
+    The same irrigation with both supply limits removed: brief 0002's behaviour.
+
+    The ceiling is set to the application depth, so min() never lowers the
+    amount, and the cap is dropped. Proven to reproduce 0002's figures exactly
+    (check_yield.py, check_limits_off_reproduces_0002).
+    """
+    return dict(irrigation, capacity_cm_day_gross=irrigation["irrigation_amount_cm"],
+                allocation_cap_cm=None)
+
+
+# A season counts as limit-bound when the supply limits cost it more than this
+# share of the yield it would have made with unlimited water. A small floor
+# rather than zero, so a rounding-level difference is not reported as a limit
+# binding; the exact loss is always reported beside the verdict.
+LIMIT_BINDING_LOSS_PCT = 1.0
+
+
+def limits_effect(limited_yield, unlimited_yield, season):
+    """
+    Whether the supply limits cost this season yield, and which limit was reached.
+
+    Counterfactual, not a day count: the same season is also run with the limits
+    removed, and the limits bound if that run out-yields this one by more than
+    LIMIT_BINDING_LOSS_PCT. Only a limit that was actually reached can have
+    bound, so the ones reached are named (plan 0003, D-5 as revised).
+    """
+    loss_pct = (round((unlimited_yield - limited_yield) / unlimited_yield * 100.0, 2)
+                if unlimited_yield else 0.0)
+    bound = loss_pct > LIMIT_BINDING_LOSS_PCT
+    reached = []
+    if season["days_at_capacity_ceiling"] > 0:
+        reached.append("pumping_capacity")
+    if season["first_cap_reached_date"]:
+        reached.append("allocation_cap")
+    return {
+        "yield_unlimited_kg_ha": round(unlimited_yield, 1),
+        "yield_loss_to_limits_pct": loss_pct,
+        "limits_bound": bound,
+        "binding_limits": reached if bound else [],
+    }
+
+
+def model_for(parameters, provider, agromanagement, soil, regime_row, region_key,
+              unlimited_supply=False):
+    """
+    The engine for one region: plain Wofost72_WLP_FD if rainfed, the irrigated
+    subclass if water_regime.csv says irrigated. Returns (model, controller or None).
+
+    unlimited_supply=True removes both supply limits, for the counterfactual run
+    that measures what they cost. Shared with build_baselines.py, like
+    agromanagement_for, so the baseline and the projection cannot be run by
+    different engines.
+    """
+    irrigation = irrigation_parameters(soil, regime_row, region_key)
+    if irrigation is None:
+        return Wofost72_WLP_FD(parameters, provider, agromanagement), None
+    if unlimited_supply:
+        irrigation = unlimited(irrigation)
+    controller = IrrigationController(irrigation)
+    return IrrigatedWofost72_WLP_FD(parameters, provider, agromanagement, controller), controller
 
 
 def run_wofost(provider, soil_row, planting_day, variety_name, max_duration, region_key,
-               label, regime_row):
-    """One water-limited WOFOST run. Returns (summary, daily output)."""
+               label, regime_row, unlimited_supply=False):
+    """
+    One water-limited WOFOST run. Returns (summary, daily output, irrigation
+    summary or None for a rainfed region).
+    """
     try:
         soil = {name: float(soil_row[name]) for name in SOIL_PARAMETERS}
     except (KeyError, ValueError) as exc:
@@ -602,15 +802,18 @@ def run_wofost(provider, soil_row, planting_day, variety_name, max_duration, reg
     except (KeyError, ValueError) as exc:
         raise RunError(f"soils.csv row for '{region_key}' has no usable WAV: {exc}") from exc
 
-    agromanagement = agromanagement_for(
-        planting_day, variety_name, max_duration, soil, regime_row, region_key)
+    agromanagement = agromanagement_for(planting_day, variety_name, max_duration)
     parameters = ParameterProvider(
         cropdata=crop_data_provider(variety_name, region_key),
         soildata=soil,
         sitedata=WOFOST72SiteDataProvider(WAV=wav))
     try:
-        model = Wofost72_WLP_FD(parameters, provider, agromanagement)
+        model, controller = model_for(
+            parameters, provider, agromanagement, soil, regime_row, region_key,
+            unlimited_supply=unlimited_supply)
         model.run_till_terminate()
+    except RunError:
+        raise  # already names the table and row to fix
     except Exception as exc:  # PCSE raises a variety of its own error types
         raise RunError(f"region '{region_key}': the {label} WOFOST run failed: {exc}") from exc
 
@@ -618,18 +821,16 @@ def run_wofost(provider, soil_row, planting_day, variety_name, max_duration, reg
     if not summary:
         raise RunError(f"region '{region_key}': the {label} WOFOST run produced no summary")
 
-    # Keep only the days the crop was actually in the ground. An irrigated
-    # region's campaign has to declare a trailing end date (see
-    # agromanagement_for), and the engine then keeps stepping the water balance
-    # after maturity, emitting rows whose crop variables are all None. Every
-    # consumer here -- the stage, the stress windows, the trajectory, the mean
-    # RFTRA -- is about the growing crop, and None would poison each of them.
-    # For a rainfed region this filter removes nothing: the run already stops at
-    # maturity, which is what keeps those regions bit-for-bit unchanged.
+    # Keep only the days the crop was actually in the ground. Every consumer
+    # here -- the stage, the stress windows, the trajectory, the mean RFTRA -- is
+    # about the growing crop, and a row whose crop variables are None would
+    # poison each of them. Since brief 0003 no region's campaign runs past
+    # maturity, so this removes nothing today; it stays as the guard it was.
     daily = [row for row in model.get_output() if row.get("DVS") is not None]
     if not daily:
         raise RunError(f"region '{region_key}': the {label} WOFOST run produced no crop days")
-    return summary[0], daily
+    irrigation = controller.summary() if controller is not None else None
+    return summary[0], daily, irrigation
 
 
 _CROP_DATA = None
@@ -821,11 +1022,11 @@ def process_region(region_key, region_rows, tables, settings, document):
     projection_series = build_series(
         region_rows, normals, region_key, planting_day, last_day, use_normals_only=False)
 
-    projection_summary, projection_daily = run_wofost(
-        build_provider(projection_series, latitude, longitude, elevation,
-                       angstrom_a, angstrom_b, "projection"),
-        soil_row, planting_day, variety_name, max_duration, region_key, "projection",
-        regime_row)
+    provider = build_provider(projection_series, latitude, longitude, elevation,
+                              angstrom_a, angstrom_b, "projection")
+    projection_summary, projection_daily, irrigation = run_wofost(
+        provider, soil_row, planting_day, variety_name, max_duration, region_key,
+        "projection", regime_row)
 
     if projection_summary.get("DOM") is None:
         raise RunError(
@@ -836,6 +1037,19 @@ def process_region(region_key, region_rows, tables, settings, document):
     projection_yield = projection_summary.get("TWSO")
     if projection_yield is None:
         raise RunError(f"region '{region_key}': WOFOST reported no grain yield")
+
+    if irrigation is not None:
+        # The one extra run an irrigated region costs: the same season with the
+        # supply limits removed, so the metadata can say what they cost rather
+        # than leave it to be inferred. Rainfed regions are untouched.
+        unlimited_summary, _, _ = run_wofost(
+            provider, soil_row, planting_day, variety_name, max_duration, region_key,
+            "unlimited-supply counterfactual", regime_row, unlimited_supply=True)
+        if unlimited_summary.get("TWSO") is None:
+            raise RunError(
+                f"region '{region_key}': the unlimited-supply counterfactual reported no "
+                f"grain yield")
+        irrigation.update(limits_effect(projection_yield, unlimited_summary["TWSO"], irrigation))
 
     distribution = tables["baselines"][region_key]
     baseline_yield = median(distribution)
@@ -893,13 +1107,15 @@ def process_region(region_key, region_rows, tables, settings, document):
         "variety_name": variety_name,
         "observed_through": observed_through,
     }
-    return snapshot, trajectory_rows(region_key, projection_daily, series_by_date, flags_by_date)
+    return (snapshot, trajectory_rows(region_key, projection_daily, series_by_date, flags_by_date),
+            irrigation)
 
 
 # --- output ------------------------------------------------------------------
 
 def build_metadata(document, settings, climatology_meta, baselines_meta,
-                   soils, planting, regimes, region_keys, crop_parameters_sha):
+                   soils, planting, regimes, region_keys, crop_parameters_sha,
+                   irrigation_by_region):
     node1_metadata = document.get("metadata") or {}
     return {
         "date": settings["as_of"],
@@ -907,9 +1123,11 @@ def build_metadata(document, settings, climatology_meta, baselines_meta,
         "pcse_version": pcse_version(),
         "wofost_engine": (
             "Wofost72_WLP_FD (water-limited, free-draining) for every region. Regions "
-            "water_regime.csv declares irrigated additionally carry a PCSE StateEvent "
-            "that irrigates on soil moisture, so they keep a live water balance and a "
-            "drought signal rather than running as potential production. See "
+            "water_regime.csv declares irrigated run a subclass whose daily rate step "
+            "irrigates on soil moisture within a pumping-capacity ceiling and any "
+            "seasonal allocation cap, so they keep a live water balance and a drought "
+            "signal rather than running as potential production. Each irrigated region "
+            "is also run once with the limits removed, to report what they cost. See "
             "metadata.water_regime for what each region actually used."),
         "crop": CROP_NAME,
         "crop_parameters": (
@@ -972,27 +1190,9 @@ def build_metadata(document, settings, climatology_meta, baselines_meta,
         # because the distribution a region's anomaly is measured against must
         # have been built under the same regime the projection just used.
         "water_regime": {
-            key: {
-                "regime": regimes[key]["regime"],
-                "trigger_depletion_fraction": (
-                    float(regimes[key]["trigger_depletion_fraction"])
-                    if regimes[key].get("trigger_depletion_fraction") else None),
-                "irrigation_amount_cm": (
-                    float(regimes[key]["irrigation_amount_cm"])
-                    if regimes[key].get("irrigation_amount_cm") else None),
-                "efficiency": (
-                    float(regimes[key]["efficiency"])
-                    if regimes[key].get("efficiency") else None),
-                "baseline_vintage": {
-                    "period": baselines_meta.get("period"),
-                    "built_at": baselines_meta.get("built_at"),
-                    "regime": (baselines_meta.get("regions", {})
-                               .get(key, {}).get("regime")),
-                },
-                "method": regimes[key]["method"],
-                "source": regimes[key]["source"],
-            }
-            for key in region_keys if key in regimes
+            key: water_regime_metadata(
+                key, regimes[key], soils[key], baselines_meta, irrigation_by_region.get(key))
+            for key in region_keys if key in regimes and key in soils
         },
         "upstream": {
             "model": "agromet-bundles/crop-weather",
@@ -1002,6 +1202,41 @@ def build_metadata(document, settings, climatology_meta, baselines_meta,
             "data_source": node1_metadata.get("data_source"),
             "pcse_convention": node1_metadata.get("pcse_convention"),
         },
+    }
+
+
+def water_regime_metadata(key, regime_row, soil_row, baselines_meta, season):
+    """
+    One region's water regime, its supply limits and what they did this season.
+
+    Per region, so a reader can tell an irrigated run from a rainfed one, and a
+    limited season from an unlimited one, without going to the README. The
+    baseline vintage is repeated because the distribution a region's anomaly is
+    measured against must have been built under the same regime and limits.
+    """
+    soil = {name: float(soil_row[name]) for name in SOIL_PARAMETERS}
+    built = baselines_meta.get("regions", {}).get(key, {})
+    binding = built.get("irrigation_binding") or {}
+    return {
+        "regime": regime_row["regime"],
+        "irrigation": irrigation_parameters(soil, regime_row, key),
+        "capacity_net_gpm_ac": (float(regime_row["capacity_net_gpm_ac"])
+                                if regime_row.get("capacity_net_gpm_ac") else None),
+        # None for a rainfed region; for an irrigated one, the season's applied
+        # water and the counterfactual verdict on whether the limits bound.
+        "season": season,
+        "baseline_vintage": {
+            "period": baselines_meta.get("period"),
+            "built_at": baselines_meta.get("built_at"),
+            "regime": built.get("regime"),
+            "irrigation": built.get("irrigation"),
+            "years_limits_bound": binding.get("years_limits_bound"),
+            "years": binding.get("years"),
+        },
+        "method": regime_row["method"],
+        "source": regime_row["source"],
+        "limits_method": regime_row.get("limits_method") or None,
+        "limits_source": regime_row.get("limits_source") or None,
     }
 
 
@@ -1062,12 +1297,13 @@ def main():
         f"{', '.join(region_keys)}")
     # Before any projection runs: a regime mismatch invalidates every anomaly
     # this run would publish, so it is not worth simulating first.
-    check_baseline_regimes(regimes, baselines_meta, region_keys)
+    check_baseline_regimes(regimes, soils, baselines_meta, region_keys)
 
     snapshots = []
     trajectories = {}
+    irrigation_by_region = {}
     for region_key in region_keys:
-        snapshot, rows = process_region(
+        snapshot, rows, irrigation_by_region[region_key] = process_region(
             region_key, grouped[region_key],
             {"soils": soils, "planting": planting, "regimes": regimes, "normals": normals,
              "baselines": baselines, "baselines_meta": baselines_meta},
@@ -1082,7 +1318,7 @@ def main():
 
     metadata = build_metadata(
         document, settings, climatology_meta, baselines_meta, soils, planting,
-        regimes, region_keys, crop_parameters_sha)
+        regimes, region_keys, crop_parameters_sha, irrigation_by_region)
 
     trajectory_document = {
         "generated_at": metadata["generated_at"],

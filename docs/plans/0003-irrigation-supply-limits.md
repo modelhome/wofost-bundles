@@ -1,7 +1,7 @@
 # Plan: Irrigation supply limits
 
 Source brief: docs/features/0003-irrigation-supply-limits.md
-Status: blocked (step 2: no K-State design-minimum capacity source; see R-1)
+Status: implemented (revised 2026-09-26 for R-1 and 2026-09-27 for R-2)
 Planned against commit: 24d658b2779b5101141a1e4c082806f85334f0c3
 Base commit: 24d658b2779b5101141a1e4c082806f85334f0c3 (branch `feat/0003-irrigation-supply-limits`)
 
@@ -99,12 +99,23 @@ inherits Nebraska's loam in `soils.csv` (brief 0002, D-4). `run` must read the
 figure and Howard County's region directly from G1851's table and map; the
 planning-time reading of which region is which is not reliable enough to commit.
 
-Kansas needs the K-State Research and Extension equivalent: a published minimum
-or recommended center-pivot capacity for western or central Kansas, applied to
-Kansas's silt loam. Planning found K-State's statement that normal corn demand
-needs 5 to 7.5 gpm/ac, and field studies at 3.1 gpm/ac, but not yet a
-design-minimum table. **If `run` cannot find a K-State design-minimum source, it
-stops and reports** rather than borrowing G1851's Nebraska table for Kansas.
+Kansas needed a K-State equivalent, and the plan said to stop rather than borrow
+G1851 if none existed. `run` found none (R-1) and stopped.
+
+**Revision, 2026-09-26: Kansas uses G1851 Region 2 as a labelled analogue**
+(John: "follow your recommendation", R-1 option 1). `ks_irrigated`'s silt loam,
+at 2.5 in/ft, gives **4.62 net gpm/ac**. The reasoning, which the row's `method`
+text and the README must carry:
+
+- Hodgeman County, at about 22 in of annual rainfall, is climatically closest
+  to G1851's western Region 2, which is 20-24 in at its eastern edge.
+- Kansas's peak ET is higher than western Nebraska's, so the borrowed figure
+  understates Kansas need. It stays a minimum, biased toward stress, in the same
+  direction as Nebraska's.
+- Both strata then rest on one standard (von Bernuth et al. 1984, via G1851),
+  so the two ceilings differ only by region and soil, not by method.
+- It is borrowed, not a Kansas source, and says so wherever the value appears.
+  A K-State design-minimum publication, if one appears, replaces it.
 
 Conversion, committed with both units and the factor at each step (the brief's
 AC-1, and `CLAUDE.md`'s unit rule):
@@ -218,6 +229,16 @@ README as the simplest rule, not as how farmers ration.
 
 ### D-5. What "bound" means, so AC-7 cannot be satisfied trivially
 
+**Revised 2026-09-27 (R-2): the definition below failed its own purpose and was
+replaced by a counterfactual.** A season is limit-bound when the limits cost it
+more than 1% (`runner.LIMIT_BINDING_LOSS_PCT`) of the yield the same season makes
+with the limits removed; only a limit actually reached (a day at the ceiling, a
+cap reached) is named among the binding ones. Each irrigated region is run a
+second time with the limits removed, in the projection and in every baseline
+year. John chose this on 2026-09-27 ("Counterfactual yield loss"). The original
+text is kept below for the record.
+
+
 With a ceiling around 0.6 cm/day gross against a 2.54 cm application depth,
 the ceiling limits the amount on every irrigation day, so "the ceiling was
 applied" would be true every year and would measure nothing. The definitions:
@@ -291,21 +312,21 @@ the traceability row says so.
 
 | ID | Acceptance criterion | Implementation | Verification | Status |
 |---|---|---|---|---|
-| AC-1 | Sourced cap (depth or "none") and ceiling (cm/day) per irrigated region; every conversion stated | `water_regime.csv` gains `allocation_cap_cm` (empty = none, with the district cited in `source`) and `capacity_cm_day_gross`; D-1 and D-2 sources and the conversion chain in `method` | `check_regime_table` extended: both columns present for irrigated rows, empty for rainfed, the "none" rows name their district, and the ceiling re-derived from the recorded gpm/ac and efficiency matches the stored value | planned |
-| AC-2 | No regime or limit inferred from key spelling | limits read only via `load_water_regime` | existing source scan in `check_regime_table` extended to the new controller code | planned |
-| AC-3 | Ten rainfed regions identical to today | rainfed regions still get plain `Wofost72_WLP_FD` and today's campaign | `check_unsplit_regions_unchanged` kept; new `check_rainfed_strata_unchanged` against `regime_regression.json` for `ne_rainfed`, `ks_rainfed` | planned |
-| AC-4 | Non-binding limits reproduce 0002 | controller of D-3 | step-3 gate measurement, then `check_limits_off_reproduces_0002`: irrigated rows against `regime_regression.json`, and a 60-season rebuild of both irrigated baselines with limits off against the committed pre-change values | planned |
-| AC-5 | Applied never exceeds cap; no day exceeds ceiling | controller clamps with `min(...)` | `check_limits_respected`: every day of the projection and every baseline season for both strata, plus the synthetic-cap case of D-5 | planned |
-| AC-6 | Irrigated baselines rebuilt under limits, 1995-2024; rainfed rows exact; limits recorded and enforced | `build_baselines.py` via the shared factory; `baselines.meta.json` records limits per region; runner check alongside `check_baseline_regimes` | rebuild diff (300 rainfed values identical, climatology unchanged); `check_baseline_limits_mismatch_fails` doctors the metadata and expects a loud failure | planned |
-| AC-7 | Per-region count of baseline years each limit bound | D-5 definitions; counts in `baselines.meta.json` | `check_limit_binding_years` prints and asserts they are recorded; cap = 0/30 expected under D-1 and explained, not failed | planned |
-| AC-8 | Gap positive and within 25-200%; before and after printed | none beyond the limits | `check_irrigation_gap` extended to print the 0002 gap (ks +133.2%, ne +57.4%) beside the new one | planned |
-| AC-9 | Hot, dry fortnight costs more yield with limits than without; metadata shows which bound | reuses `perturb_silking` | `check_capacity_stress`: perturbed irrigated regions run with limits on and off in-process; limits-on loss is larger, and capacity-limited days > 0 | planned |
-| AC-10 | Metadata reports limits, applied water and binding; no required set changes; input still binds to `crop_weather_daily` | `build_metadata` `water_regime` block extended per D-5 | `check_schema_honesty` extended; `check_schema_compatibility` rerun from the Model Home repo | planned |
-| AC-11 | Unknown `region_key` fails loudly in every table | limits live in `water_regime.csv`, already covered | `check_every_table_fails_loudly` and `check_unknown_region_fails` still pass; add a malformed-limit case (a negative ceiling) that fails naming the row | planned |
-| AC-12 | Docker build; `--network none` identical apart from `generated_at` | `Dockerfile` unchanged unless a new file ships | build and run offline, diff | planned |
-| AC-13 | `validity_domain` and `not_for` describe the limits; validator clean within caps | `Modelfile.toml` | `python -m orchestration.modelfile validate`; character counts recorded | planned |
-| AC-14 | README and `CLAUDE.md` current, including node 3's re-key | README limits section, sources, conversion, D-4, A-1 caveat, before/after figures; `CLAUDE.md` design notes, verified results, task lists (A-6) | review | planned |
-| AC-15 | `check_yield.py` passes in full, 0002's 379 checks included, updated not deleted | the two `StateEvent` assertions in `check_regime_table` (`check_yield.py:524-533`) are rewritten to assert the controller's configuration and the single campaign, not removed | full run | planned |
+| AC-1 | Sourced cap (depth or "none") and ceiling (cm/day) per irrigated region; every conversion stated | `water_regime.csv` gains `allocation_cap_cm` (empty = sourced none), `capacity_net_gpm_ac`, `capacity_cm_day_gross` and `limits_method`/`limits_source` with the conversion chain and citations | `check_limits_table`: columns present, empty for rainfed, gross ceiling re-derived from net gpm/ac and efficiency (NE 3.85 -> 0.6101, KS 4.62 -> 0.7321), empty caps declared as a sourced none naming the NRD/GMD | **pass** |
+| AC-2 | No regime or limit inferred from key spelling | limits read only through `irrigation_parameters(soil, regime_row, key)` | source scan in `check_regime_table` over `runner.py` and `build_baselines.py`, now covering the controller code | **pass** |
+| AC-3 | Ten rainfed regions identical to today | rainfed regions get plain `Wofost72_WLP_FD` from `model_for`, no controller | `check_rainfed_regions_unchanged` (all ten against `regime_regression.json`) plus the kept `check_unsplit_regions_unchanged`; 300 rainfed baseline values unchanged on rebuild | **pass** |
+| AC-4 | Non-binding limits reproduce 0002 | D-3 controller; `unlimited()` | step-3 gate (0 level-only days); `check_limits_off_reproduces_0002`: both irrigated projection rows identical in every field with limits off and 0002's distribution restored, each delivered run's unlimited counterfactual equals 0002's yield, and all 60 baseline years' unlimited yields equal 0002's committed values | **pass** |
+| AC-5 | Applied never exceeds cap; no day exceeds ceiling | controller clamps with `min(...)`; `max_daily_gross_cm` reported | `check_limits_respected`: projection and 30 baseline seasons per stratum within the ceiling; synthetic 10 cm cap never exceeded, reached date reported, cap named as binding | **pass** |
+| AC-6 | Irrigated baselines rebuilt under limits, 1995-2024; rainfed rows exact; limits recorded and enforced | `build_baselines.py` via `model_for`; `baselines.meta.json` records `irrigation` and `irrigation_binding` per region; `check_baseline_regimes` compares them before any projection | rebuild: 300 rainfed values identical, climatology byte-identical; `check_baseline_regime_matches`; `check_baseline_regime_mismatch_fails` with two new scenarios (different ceiling; pre-0003 baseline with no irrigation record) | **pass** |
+| AC-7 | Per-region count of baseline years each limit bound | counterfactual D-5 (R-2); `binding_summary` in `baselines.meta.json` | `check_limit_binding_years`: NE 22/30 capacity-bound (>5% in 10), KS 30/30 (>5% in 19), cap 0/30 both, as D-1 predicts | **pass** |
+| AC-8 | Gap positive and within 25-200%; before and after printed | none beyond the limits | `check_irrigation_gap`: KS +116.5% (0002 +133.2%, NASS +105%), NE +52.0% (0002 +57.4%, NASS +55%) | **pass** |
+| AC-9 | Hot, dry fortnight costs more yield with limits than without; metadata shows which bound | `perturb_silking` reused; counterfactual in metadata | `check_capacity_stress`: KS 1,132 vs 684 kg/ha lost, NE 1,296 vs 1,020; limits' cost 7.17% -> 15.51% (KS), 3.43% -> 7.16% (NE); pumping capacity named as binding | **pass** |
+| AC-10 | Metadata reports limits, applied water and binding; no required set changes; input still binds to `crop_weather_daily` | `water_regime_metadata`: `irrigation`, `season` (applied, days, max daily, days at ceiling, cap reached, unlimited yield, loss, verdict, limits named), `baseline_vintage` with limits | `check_schema_honesty` extended (season keys present for irrigated, null for rainfed, snapshot columns unchanged); `check_schema_compatibility`: binds `crop_weather_daily`, refuses `crop_weather_summary` | **pass** |
+| AC-11 | Unknown `region_key` fails loudly in every table | limits in `water_regime.csv`, already covered; `_positive_float` validation | `check_unknown_region_fails`, `check_every_table_fails_loudly` unchanged and passing; `check_malformed_limit_fails`: negative, empty and non-numeric limits each raise naming the table, region and column | **pass** |
+| AC-12 | Docker build; `--network none` identical apart from `generated_at` | `Dockerfile` unchanged (no new shipped file) | built from `corn-yield/`; offline run: rows, columns and trajectory identical, metadata differs only in `generated_at`, pin verified at `f0a6491f2368` | **pass** |
+| AC-13 | `validity_domain` and `not_for` describe the limits; validator clean within caps | `Modelfile.toml` `validity_domain` (514/600), `not_for`, `provenance` (392/400), resources comment | `orchestration.modelfile validate` -> `OK`, no annotation warnings | **pass** |
+| AC-14 | README and `CLAUDE.md` current, including node 3's re-key | README: table, controller, traps, new Supply limits section, limitations, future work, validation; `CLAUDE.md`: file list, design notes, verified results, task lists (with A-6 edits) | review of the full diff | **pass** |
+| AC-15 | `check_yield.py` passes in full, 0002's 379 checks included, updated not deleted | the two `StateEvent` assertions rewritten (campaign has no events; engine and controller per regime); `check_baseline_regimes` callers updated | **485/485 pass** (baseline 379/379); no check removed | **pass** |
 
 ## Verification
 
@@ -313,19 +334,19 @@ Run from `corn-yield/` in the scratch venv (A-5), with the caches from A-4.
 
 | Command | Purpose | Baseline result | Final result |
 |---|---|---|---|
-| `python runner.py sample_input.json > run/corn_yield_snapshot.output.json` | model runs end to end, stdout is JSON only | pass: 12 regions, all mature, 0.9 s | pending |
-| `python check_yield.py run/corn_yield_snapshot.output.json` | the bundle's committed validation | **379/379 pass** (pinned crop parameters linked, so the verifiable pin branch runs) | pending |
+| `python runner.py sample_input.json > run/corn_yield_snapshot.output.json` | model runs end to end, stdout is JSON only | pass: 12 regions, all mature, 0.9 s | pass: 12 regions, all mature, 0.9 s; 2 extra counterfactual runs |
+| `python check_yield.py run/corn_yield_snapshot.output.json` | the bundle's committed validation | **379/379 pass** (pinned crop parameters linked, so the verifiable pin branch runs) | **485/485 pass** |
 | step-3 gate script (scratch, not committed) | D-3's reproducibility precondition | **pass**: 0 level-only days in 60 baseline seasons (762 applications) and the projection (29); 0 seasons start below the trigger; stepped runs reproduce all 60 committed baseline values | n/a |
-| `python build_baselines.py <agromet-bundles>/crop-weather/regions.csv <crop-parameters checkout>` | AC-6 rebuild; rainfed values exact | n/a | pending |
-| `python build_climatology.py <regions.csv>` | A-3: proves climatology is unchanged | n/a | pending |
-| `docker build -t corn-yield . && docker run --rm --network none corn-yield` | AC-12 | pending | pending |
-| `python -m orchestration.modelfile validate corn-yield/Modelfile.toml` (from the Model Home repo) | AC-13 | pending | pending |
+| `python build_baselines.py <agromet-bundles>/crop-weather/regions.csv <crop-parameters checkout>` | AC-6 rebuild; rainfed values exact | n/a | pass: 360 rows/12 keys; 300 rainfed values identical; irrigated medians NE 9,339 -> 8,966, KS 6,164 -> 5,676 |
+| `python build_climatology.py <regions.csv>` | A-3: proves climatology is unchanged | n/a | pass: `climatology.csv` byte-identical; meta differed only in `built_at` and was restored |
+| `docker build -t corn-yield . && docker run --rm --network none corn-yield` | AC-12 | not run before the change (Dockerfile unchanged; 0002 verified it) | pass: offline output identical to local apart from `generated_at` |
+| `python -m orchestration.modelfile validate corn-yield/Modelfile.toml` (from the Model Home repo) | AC-13 | not run before the change | `OK`, no annotation warnings |
 
 ## Conflicts found while running
 
 Recorded as they were hit. `run` stopped at the first one, as the plan requires.
 
-### R-1. No K-State design-minimum capacity exists to source Kansas's ceiling (BLOCKING)
+### R-1. No K-State design-minimum capacity exists to source Kansas's ceiling (resolved: option 1)
 
 Step 2 looked for the Kansas counterpart D-2 requires and found none:
 
@@ -359,7 +380,59 @@ Kansas value was written. Options for the revised plan:
 4. **No ceiling for Kansas**: Nebraska constrained, Kansas unconstrained as in
    0002, with the asymmetry stated. This leaves AC-9 unmet for Kansas.
 
-### Step 2 findings that held (Nebraska)
+**Resolution (2026-09-26):** John chose option 1. D-2 is revised accordingly,
+and `run` resumes at the rest of step 2 (the D-1 re-verification).
+
+### R-2. D-5's "bound" definition was trivially true (resolved: counterfactual)
+
+With the limits in place, D-5 as planned counted capacity as binding in 29/30
+Nebraska and 30/30 Kansas baseline years. Measured with the limits **removed**,
+27/30 (NE) and 30/30 (KS) years still had irrigation days on which WOFOST's crop
+was stressed (`RFTRA < 1`): maize is already short of water at the 50% depletion
+trigger. So "at the ceiling on a stressed day" measured the trigger, not the
+ceiling, which is exactly the trivially-true AC-7 that D-5 was written to
+prevent. `run` stopped and asked. John chose the counterfactual on 2026-09-27;
+D-5 now records it. It adds one limits-off WOFOST run per irrigated region at
+run time, which changes the "one simulation per region" design note; the
+README, `CLAUDE.md` and Modelfile resources comment say so.
+
+### Step 2 findings on resumption (D-1, both points)
+
+- **D-1 re-verified at both points with official GIS layers** (2026-09-26):
+  Nebraska's `NaturalResourcesDistrictBoundaries` layer puts `ne_irrigated` in
+  the **Lower Loup NRD**, which is one side of the Howard County split. Kansas
+  Geoportal's GMD layer returns no district for `ks_irrigated`; a control point
+  at Garden City returns GMD 3, so the empty result is real.
+- **Lower Loup sets no per-acre pumping allocation**: its 2025 Lower Platte
+  River Basin Coalition report (dated 2026-03-01) uses "groundwater acres
+  allocations" for new irrigated acres, and its February 2024 Groundwater
+  Quantity Area requires meters in Buffalo and Platte counties, not Howard.
+- **No Kansas allocation applies at the point.** It lies outside every GMD, so
+  no LEMA applies. The Pawnee Valley IGUCA controls new appropriations (750
+  acre-feet per 2-mile circle since 1985), not seasonal pumping on existing
+  rights, per Big Bend GMD 5's page. KDA's own IGUCA pages refuse automated
+  requests, so they were not read directly.
+
+### Deviations from the plan, all recorded as built
+
+- **More `water_regime.csv` columns than D-2 named**: `capacity_net_gpm_ac`
+  (so the gross ceiling can be re-derived and checked) and
+  `limits_method`/`limits_source` (per-limit provenance beside the existing
+  regime `method`/`source`).
+- **The controller summary reports plain facts** (`applied_gross_cm`,
+  `irrigation_days`, `max_daily_gross_cm`, `days_at_capacity_ceiling`,
+  `first_cap_reached_date`); the binding verdict comes from `limits_effect()`.
+  `max_daily_gross_cm` was added so AC-5 is proven from committed evidence for
+  all baseline seasons.
+- **Check names differ from the plan**: `check_rainfed_regions_unchanged` covers
+  all ten rainfed regions, not only the two strata. The limits-mismatch refusal
+  is two new scenarios inside `check_baseline_regime_mismatch_fails` rather than
+  a separate function. `check_limits_table` and `check_malformed_limit_fails`
+  were added.
+- **The engine subclass declares `irrigation` as a PCSE trait**: PCSE engines
+  refuse undeclared attributes, which the plan did not anticipate.
+
+### Step 2 findings from the first stop (R-1)
 
 - **G1851 re-verified from the PDF** (issued May 2008; Kranz, Martin, Irmak,
   van Donk, Yonts; Table I from von Bernuth et al. 1984, Trans. ASAE 27(2)).
@@ -373,9 +446,8 @@ Kansas value was written. Options for the revised plan:
   hours) to size a larger pump for a pivot that runs less. The daily ceiling is
   therefore Table I's value as a 24-hour average, with no hours correction:
   3.85 x 0.13470 = 0.5186 cm/day net = 0.6101 cm/day gross at 0.85 efficiency.
-- **D-1 not yet re-verified in `run`** (the Central Platte / Lower Loup side of
-  the point, and Hodgeman's status): it was not reached, because R-1 stops step
-  2 first.
+- **D-1 was not re-verified before the first stop**; it was on resumption, as
+  recorded above.
 
 ### Step 3 gate: passed
 
@@ -394,7 +466,7 @@ under D-3 the level trigger and the crossing trigger agree on every day, and
 AC-4 must hold exactly. The stepped runs reproduced all 60 committed baseline
 values, so the measurement itself is faithful.
 
-### Done before stopping
+### Done before the first stop (R-1)
 
 - Branch `feat/0003-irrigation-supply-limits` from `24d658b`.
 - Baseline: model 12 regions in 0.9 s; `check_yield.py` **379/379**.
@@ -482,10 +554,9 @@ docs/plans/0003-irrigation-supply-limits.md      this plan
 
 ## Risks and follow-ups
 
-- **No K-State design-minimum source.** D-2 makes this a stop, not a
-  substitution. The likeliest outcome, if it happens, is a revised plan that
-  either accepts a named K-State requirement figure or applies G1851's method to
-  Kansas explicitly.
+- **Kansas's ceiling is borrowed** from G1851 Region 2 (R-1, option 1). It
+  understates Kansas's peak demand, so Kansas's modelled stress is, if anything,
+  overstated. A K-State design-minimum source would replace it.
 - **The D-3 gate fails.** If 0002 ever left the profile below the trigger after
   an application, AC-4 cannot hold exactly under the level trigger. The plan
   then needs a stated tolerance, per the brief.
